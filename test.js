@@ -27,9 +27,11 @@ var frequencies = ft(sine);
 frequencies = frequencies.map((v) => db.fromGain(v));
 
 var spectrogram = Spectrogram({
-	frequencies: frequencies
+	frequencies: frequencies,
+	autostart: false
 	// weighting:
 });
+spectrogram.render();
 
 
 

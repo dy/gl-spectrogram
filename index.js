@@ -30,79 +30,155 @@ function Spectrogram (options) {
 
 	if (isBrowser) this.container.classList.add('gl-spectrogram');
 
-	//init RTT (render to texture) routine
-	this.spectrogramTextures = [
-		this.createTexture(),
-		this.createTexture()
-	];
-	this.frequenciesTexture = this.createTexture();
+	var size = [1024, 512];
 
+	var texture = gl.createTexture();
 	gl.activeTexture(gl.TEXTURE0);
-	gl.bindTexture(gl.TEXTURE_2D, this.spectrogramTextures[0]);
-	gl.activeTexture(gl.TEXTURE1);
-	gl.bindTexture(gl.TEXTURE_2D, this.spectrogramTextures[1]);
-	gl.activeTexture(gl.TEXTURE2);
-	gl.bindTexture(gl.TEXTURE_2D, this.frequenciesTexture);
+	gl.bindTexture(gl.TEXTURE_2D, texture);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+	gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, size[0], size[1], 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
 
-	//spectrogram texture for main program
-	this.setTexture('frequencies', {
-		unit: 3,
-		data: null,
-		format: gl.ALPHA,
-		type: gl.UNSIGNED_BYTE,
-		filter: this.gl.NEAREST,
-		wrap: this.gl.CLAMP_TO_EDGE
+	var altTexture = gl.createTexture();
+	gl.activeTexture(gl.TEXTURE1);
+	gl.bindTexture(gl.TEXTURE_2D, altTexture);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+	gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, size[0], size[1], 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+
+	var frequencies = gl.createTexture();
+	gl.activeTexture(gl.TEXTURE2);
+	gl.bindTexture(gl.TEXTURE_2D, frequencies);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+	// gl.texImage2D(gl.TEXTURE_2D, 0, gl.ALPHA, 1, 1, 0, gl.ALPHA, gl.UNSIGNED_BYTE, new Uint8Array([255,255,255,255]));
+
+
+	this.shiftComponent = Component({
+		context: gl,
+		textures: {
+			// texture: {
+			// 	unit: 0,
+			// 	data: null,
+			// 	format: gl.RGBA,
+			// 	type: gl.UNSIGNED_BYTE,
+			// 	filter: gl.NEAREST,
+			// 	wrap: gl.CLAMP_TO_EDGE,
+			// 	width: size[0],
+			// 	height: size[1]
+			// },
+			// altTexture: {
+			// 	unit: 1,
+			// 	data: null,
+			// 	format: gl.RGBA,
+			// 	type: gl.UNSIGNED_BYTE,
+			// 	filter: gl.NEAREST,
+			// 	wrap: gl.CLAMP_TO_EDGE,
+			// 	width: size[0],
+			// 	height: size[1]
+			// },
+			// frequencies: {
+			// 	unit: 2,
+			// 	data: null,
+			// 	format: gl.ALPHA,
+			// 	type: gl.UNSIGNED_BYTE,
+			// 	filter: gl.NEAREST,
+			// 	wrap: gl.CLAMP_TO_EDGE
+			// }
+		},
+		frag: `
+			precision highp float;
+
+			uniform sampler2D texture;
+			uniform sampler2D frequencies;
+			uniform vec4 viewport;
+
+			void main () {
+				vec2 coord = vec2((vec2(gl_FragCoord.x + 1., gl_FragCoord.y) - viewport.xy) / viewport.zw);
+				vec3 color = texture2D(texture, coord).xyz;
+				if (gl_FragCoord.x - viewport.x >= viewport.z - 10.) {
+					color = texture2D(frequencies, vec2(coord.y,.5)).www;
+				}
+				gl_FragColor = vec4(color, 1);
+			}
+		`,
+		phase: 0,
+		framebuffer: gl.createFramebuffer(),
+		autoinitTextures: false,
+		render: function () {
+			var gl = this.gl;
+
+			gl.useProgram(this.program);
+
+			//TODO: throttle rendering here
+			gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
+			gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.phase === 0 ? altTexture : texture, 0);
+			var texLocation = gl.getUniformLocation(this.program, 'texture');
+			gl.uniform1i(texLocation, this.phase);
+			var freqLocation = gl.getUniformLocation(this.program, 'frequencies');
+			gl.uniform1i(freqLocation, 2);
+
+			this.phase = (this.phase + 1) % 2;
+
+			//vp is unbound from canvas, so we have to manually set it
+			gl.uniform4fv(gl.getUniformLocation(this.program, 'viewport'), [0,0,size[0], size[1]]);
+			gl.viewport(0,0,size[0],size[1]);
+			this.draw(this);
+
+			gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+		},
+		autostart: false,
+		float: this.float,
+		antialias: this.antialias
 	});
+
+	//preset initial freqs
 	this.setFrequencies(this.frequencies);
 
-	/*
-	//rendering phase
-	this.phase = 0;
-
-	//program, shifting texture
-	this.shiftProgram = this.createProgram(this.vert, `
-		precision highp float;
-
-		uniform sampler2D data;
-		uniform vec2 size;
-
-		void main () {
-			vec2 coord = vec2(vec2(gl_FragCoord.x + 1., gl_FragCoord.y) / size);
-			float value = texture2D(data, coord).z;
-			gl_FragColor = vec4(vec3(value), 1);
-		}
-	`);
-	this.shiftSizeLocation = gl.getUniformLocation(this.program, 'size');
-	this.shiftDataLocation = gl.getUniformLocation(this.program, 'data');
-
-	//program, putting frequencies slice into texture
-	this.freqProgram = this.createProgram(this.vert, `
-		precision highp float;
-
-		uniform sampler2D frequencies;
-		uniform vec2 size;
-
-		void main () {
-			vec2 coord = vec2(gl_FragCoord.x / size.x, .5);
-			float value = texture2D(frequencies, coord).z;
-			gl_FragColor = vec4(vec3(value), 1);
-		}
-	`);
-	this.freqSizeLocation = gl.getUniformLocation(this.program, 'size');
-	this.freqDataLocation = gl.getUniformLocation(this.program, 'frequencies');
-	gl.uniform1i(this.freqDataLocation, 2);
-
-	//bind shift/freq attributes
-	gl.bindAttribLocation(this.shiftProgram, 0, 'position');
-	gl.bindAttribLocation(this.freqProgram, 0, 'position');
-
-	//framebuffer for render2
-	this.framebuffer = this.gl.createFramebuffer();
-	gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
-	*/
 }
 
 inherits(Spectrogram, Component);
+
+Spectrogram.prototype.autoinitTextures = false;
+
+//render, shifting the texture
+Spectrogram.prototype.render = function () {
+	var gl = this.gl;
+
+
+	this.shiftComponent.render();
+
+	gl.useProgram(this.program);
+	var loc = gl.getUniformLocation(this.program, 'texture');
+	gl.uniform1i(loc, 1);
+
+	// gl.uniform1i(this.textures.texture.location, this.shiftComponent.phase);
+
+	Component.prototype.render.call(this);
+};
+
+
+//default renderer just outputs active texture
+Spectrogram.prototype.frag = `
+	precision highp float;
+
+	uniform sampler2D texture;
+	// uniform sampler2D colormap;
+	uniform vec4 viewport;
+
+	void main () {
+		vec2 coord = (gl_FragCoord.xy - viewport.xy) / viewport.zw;
+		// float intensity = texture2D(texture, coord).y;
+		// gl_FragColor = vec4(vec3(intensity), 1);
+		gl_FragColor = vec4(vec3(texture2D(texture, coord).xyz), 1);
+	}
+`;
 
 Spectrogram.prototype.antialias = false;
 Spectrogram.prototype.premultipliedAlpha = true;
@@ -132,21 +208,6 @@ Spectrogram.prototype.fill = 'greys';
 Spectrogram.prototype.balance = .65;
 Spectrogram.prototype.background = undefined;
 
-
-//default renderer just outputs active texture
-Spectrogram.prototype.frag = `
-	precision highp float;
-
-	uniform sampler2D frequencies;
-	// uniform sampler2D colormap;
-	uniform vec4 viewport;
-
-	void main () {
-		vec2 coord = (gl_FragCoord.xy - viewport.xy) / viewport.zw;
-		float intensity = texture2D(frequencies, coord).w;
-		gl_FragColor = vec4(vec3(intensity), 1);
-	}
-`;
 
 
 //array with initial values of the last moment
@@ -190,39 +251,8 @@ Spectrogram.prototype.setFrequencies = function (frequencies) {
 	//map mags to 0..255 range limiting by db subrange
 	magnitudes = magnitudes.map((value) => clamp(255 * (value - minDb) / (maxDb - minDb), 0, 255));
 
-	return this.setTexture('frequencies', magnitudes);
-};
 
-
-//render, shifting the texture
-Spectrogram.prototype.render = function () {
-	var gl = this.gl;
-
-	/*
-	var width, height;
-
-	//TODO: make control of rendering speed
-
-	var phase = this.phase;
-	this.phase = (this.phase + 1) % 2;
-
-	//render shifted texture
-	gl.viewport(0,0,width,height);
-	gl.useProgram(this.shiftProgram);
-	gl.uniform1i(this.shiftDataLocation, phase);
-	gl.bindFramebuffer(this.framebuffer);
-	gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.spectrogramTextures[this.phase], 0);
-	gl.drawArrays(gl.TRIANGLES, 0, 3);
-
-
-	//render last frequencies slice
-	gl.viewport(width - 1,0,1,height);
-	gl.useProgram(this.freqProgram);
-	gl.drawArrays(gl.TRIANGLES, 0, 3);
-
-	//switch to canvas renderbuffer, render texture there
-	gl.bindFramebuffer(null);
-	*/
-
-	Component.prototype.render.call(this);
+	gl.activeTexture(gl.TEXTURE2);
+	gl.texImage2D(gl.TEXTURE_2D, 0, gl.ALPHA, magnitudes.length, 1, 0, gl.ALPHA, gl.UNSIGNED_BYTE, new Uint8Array(magnitudes));
+	// return this.shiftComponent.setTexture('frequencies', magnitudes);
 };
