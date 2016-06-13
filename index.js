@@ -32,65 +32,37 @@ function Spectrogram (options) {
 
 	var size = [1024, 512];
 
-	var texture = gl.createTexture();
-	gl.activeTexture(gl.TEXTURE0);
-	gl.bindTexture(gl.TEXTURE_2D, texture);
-	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-	gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, size[0], size[1], 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-
-	var altTexture = gl.createTexture();
-	gl.activeTexture(gl.TEXTURE1);
-	gl.bindTexture(gl.TEXTURE_2D, altTexture);
-	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-	gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, size[0], size[1], 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-
-	var frequencies = gl.createTexture();
-	gl.activeTexture(gl.TEXTURE2);
-	gl.bindTexture(gl.TEXTURE_2D, frequencies);
-	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-	// gl.texImage2D(gl.TEXTURE_2D, 0, gl.ALPHA, 1, 1, 0, gl.ALPHA, gl.UNSIGNED_BYTE, new Uint8Array([255,255,255,255]));
-
-
 	this.shiftComponent = Component({
 		context: gl,
 		textures: {
-			// texture: {
-			// 	unit: 0,
-			// 	data: null,
-			// 	format: gl.RGBA,
-			// 	type: gl.UNSIGNED_BYTE,
-			// 	filter: gl.NEAREST,
-			// 	wrap: gl.CLAMP_TO_EDGE,
-			// 	width: size[0],
-			// 	height: size[1]
-			// },
-			// altTexture: {
-			// 	unit: 1,
-			// 	data: null,
-			// 	format: gl.RGBA,
-			// 	type: gl.UNSIGNED_BYTE,
-			// 	filter: gl.NEAREST,
-			// 	wrap: gl.CLAMP_TO_EDGE,
-			// 	width: size[0],
-			// 	height: size[1]
-			// },
-			// frequencies: {
-			// 	unit: 2,
-			// 	data: null,
-			// 	format: gl.ALPHA,
-			// 	type: gl.UNSIGNED_BYTE,
-			// 	filter: gl.NEAREST,
-			// 	wrap: gl.CLAMP_TO_EDGE
-			// }
+			texture: {
+				unit: 0,
+				data: null,
+				format: gl.RGBA,
+				type: gl.UNSIGNED_BYTE,
+				filter: gl.NEAREST,
+				wrap: gl.CLAMP_TO_EDGE,
+				width: size[0],
+				height: size[1]
+			},
+			altTexture: {
+				unit: 1,
+				data: null,
+				format: gl.RGBA,
+				type: gl.UNSIGNED_BYTE,
+				filter: gl.NEAREST,
+				wrap: gl.CLAMP_TO_EDGE,
+				width: size[0],
+				height: size[1]
+			},
+			frequencies: {
+				unit: 2,
+				data: null,
+				format: gl.ALPHA,
+				type: gl.UNSIGNED_BYTE,
+				filter: gl.NEAREST,
+				wrap: gl.CLAMP_TO_EDGE
+			}
 		},
 		frag: `
 			precision highp float;
@@ -102,15 +74,14 @@ function Spectrogram (options) {
 			void main () {
 				vec2 coord = vec2((vec2(gl_FragCoord.x + 1., gl_FragCoord.y) - viewport.xy) / viewport.zw);
 				vec3 color = texture2D(texture, coord).xyz;
-				if (gl_FragCoord.x - viewport.x >= viewport.z - 10.) {
+				if (gl_FragCoord.x - viewport.x >= viewport.z - 1.) {
 					color = texture2D(frequencies, vec2(coord.y,.5)).www;
 				}
-				gl_FragColor = vec4(color, 1);
+				gl_FragColor = vec4(vec3(color), 1);
 			}
 		`,
 		phase: 0,
 		framebuffer: gl.createFramebuffer(),
-		autoinitTextures: false,
 		render: function () {
 			var gl = this.gl;
 
@@ -118,11 +89,8 @@ function Spectrogram (options) {
 
 			//TODO: throttle rendering here
 			gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
-			gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.phase === 0 ? altTexture : texture, 0);
-			var texLocation = gl.getUniformLocation(this.program, 'texture');
-			gl.uniform1i(texLocation, this.phase);
-			var freqLocation = gl.getUniformLocation(this.program, 'frequencies');
-			gl.uniform1i(freqLocation, 2);
+			gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.textures[this.phase ? 'texture' : 'altTexture'].texture, 0);
+			gl.uniform1i(this.textures.texture.location, this.phase);
 
 			this.phase = (this.phase + 1) % 2;
 
@@ -145,8 +113,6 @@ function Spectrogram (options) {
 
 inherits(Spectrogram, Component);
 
-Spectrogram.prototype.autoinitTextures = false;
-
 //render, shifting the texture
 Spectrogram.prototype.render = function () {
 	var gl = this.gl;
@@ -156,9 +122,7 @@ Spectrogram.prototype.render = function () {
 
 	gl.useProgram(this.program);
 	var loc = gl.getUniformLocation(this.program, 'texture');
-	gl.uniform1i(loc, 1);
-
-	// gl.uniform1i(this.textures.texture.location, this.shiftComponent.phase);
+	gl.uniform1i(loc, this.shiftComponent.phase);
 
 	Component.prototype.render.call(this);
 };
@@ -251,8 +215,5 @@ Spectrogram.prototype.setFrequencies = function (frequencies) {
 	//map mags to 0..255 range limiting by db subrange
 	magnitudes = magnitudes.map((value) => clamp(255 * (value - minDb) / (maxDb - minDb), 0, 255));
 
-
-	gl.activeTexture(gl.TEXTURE2);
-	gl.texImage2D(gl.TEXTURE_2D, 0, gl.ALPHA, magnitudes.length, 1, 0, gl.ALPHA, gl.UNSIGNED_BYTE, new Uint8Array(magnitudes));
-	// return this.shiftComponent.setTexture('frequencies', magnitudes);
+	return this.shiftComponent.setTexture('frequencies', magnitudes);
 };

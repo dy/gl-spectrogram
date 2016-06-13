@@ -28,10 +28,15 @@ frequencies = frequencies.map((v) => db.fromGain(v));
 
 var spectrogram = Spectrogram({
 	frequencies: frequencies,
-	autostart: false
+	smoothing: 0,
+	// autostart: false
 	// weighting:
 });
-spectrogram.render();
+
+setTimeout(() => {
+	var frequencies = ft(noise).map(db.fromGain);
+	spectrogram.setFrequencies(frequencies)
+}, 1000)
 
 
 
