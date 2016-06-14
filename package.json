@@ -5,7 +5,8 @@
   "main": "index.js",
   "scripts": {
     "test": "budo test.js",
-    "test:browser": "budo test.js"
+    "test:browser": "budo test.js",
+    "build": "browserify test.js -g bubleify -o demo/index.js"
   },
   "repository": {
     "type": "git",
@@ -24,6 +25,7 @@
   "homepage": "https://github.com/audio-lab/gl-spectrogram#readme",
   "devDependencies": {
     "audio-context": "^0.1.0",
+    "bubleify": "^0.3.1",
     "decibels": "^1.0.1",
     "fourier-transform": "^1.0.2",
     "start-app": "^1.1.13"
