@@ -17,11 +17,9 @@ var spectrogram = createSpectrogram({
 	canvas: canvas,
 	context: 'webgl',
 
-	//magnitude range to show
+	//audio settings
 	maxDecibels: -30,
 	minDecibels: -100,
-
-	//frequency range
 	maxFrequency: 20000,
 	minFrequency: 20,
 	sampleRate: 44100,
@@ -31,23 +29,20 @@ var spectrogram = createSpectrogram({
 	grid: true,
 	axes: false,
 	logarithmic: true,
-	colormap: true,
 
 	//rendering settings
 	smoothing: 0.5,
-	details: 1,
-
-	//grouping settings
-	snap: false,
-	group: 0,
-
-	//style settings
 	fill: 'inferno',
 	background: null
 });
 
-//push new frequencies slice, or replace by the offset
-spectrogram.setFrequencies(data, offset?);
+//push frequencies data, view is shifted for 1 slice
+spectrogram.push(data);
+
+//for even timeflow push data in setTimeout, stream data event, scriptProcessorCallback etc.
+setTimeout(() => {
+	spectrogram.push(getData(data));
+}, 100);
 ```
 
 ## Related

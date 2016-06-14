@@ -23,13 +23,14 @@
   },
   "homepage": "https://github.com/audio-lab/gl-spectrogram#readme",
   "devDependencies": {
+    "audio-context": "^0.1.0",
     "decibels": "^1.0.1",
     "fourier-transform": "^1.0.2",
     "start-app": "^1.1.13"
   },
   "dependencies": {
     "a-weighting": "^1.0.0",
-    "colormap": "^2.1.2",
+    "colormap": "^2.2.0",
     "flatten": "^1.0.2",
     "gl-component": "^1.4.11",
     "inherits": "^2.0.1",

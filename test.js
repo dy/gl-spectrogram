@@ -1,8 +1,16 @@
-// var startApp = require('start-app');
+var startApp = require('start-app');
 var Spectrogram = require('./');
 var db = require('decibels');
 var ft = require('fourier-transform');
+var ctx = require('audio-context');
 
+
+
+var source = null;
+var analyser = ctx.createAnalyser();
+analyser.frequencyBinCount = 2048;
+analyser.smoothingTimeConstant = .1;
+analyser.connect(ctx.destination);
 
 
 //generate input sine
@@ -18,31 +26,27 @@ for (var i = 0; i < N; i++) {
 	noise[i] = Math.random() * 2 - 1;
 }
 
-var frequencies = ft(sine);
-// var frequencies = new Float32Array(1024).fill(0.5);
+// var frequencies = ft(sine);
+// var frequencies = Array(1024).fill(-150);
 // var frequencies = ft(noise);
 //NOTE: ios does not allow setting too big this value
-// var frequencies = new Float32Array(analyser.frequencyBinCount);
+var frequencies = new Float32Array(analyser.frequencyBinCount);
 // for (var i = 0; i < frequencies.length; i++) frequencies[i] = -150;
-frequencies = frequencies.map((v) => db.fromGain(v));
+// frequencies = frequencies.map((v) => db.fromGain(v));
 
 var spectrogram = Spectrogram({
-	frequencies: frequencies,
-	smoothing: 0,
+	smoothing: .2,
+	logarithmic: false,
 	// autostart: false
 	// weighting:
 });
 
-setTimeout(() => {
-	var frequencies = ft(noise).map(db.fromGain);
-	spectrogram.setFrequencies(frequencies)
-}, 1000)
 
 
-
-// var app = startApp({
-// 	source: 'some_sound_cloud',
-	// settings: {
+var app = startApp({
+	color: 'white',
+	source: 'https://soundcloud.com/esteban-lara/sets/8daycasts',
+	// params: {
 	// 	weighting: {
 	// 		values: {
 	// 			itu: 'itu',
@@ -57,7 +61,6 @@ setTimeout(() => {
 	// 	logarithmic: spectrogram.logarithmic,
 	// 	grid: spectrogram.grid,
 	// 	axes: spectrogram.axes,
-	// 	map: spectrogram.map,
 	// 	smoothing: {
 	// 		min: 0,
 	// 		max: 1,
@@ -65,7 +68,23 @@ setTimeout(() => {
 	// 		value: spectrogram.smoothing
 	// 	}
 	// }
-// })
-// .on('change', (e) => {
-// 	spectrogram.update();
-// });
+})
+.on('ready', function (node) {
+	source = node;
+	source.connect(analyser);
+
+})
+.on('play', function () {
+	this.pushInterval = setInterval(() => {
+		// for (var i = 0; i < N; i++) {
+		// 	frequencies[i] = Math.sin(10000 * Math.PI * 2 * (i / rate));
+		// }
+		// frequencies = ft(frequencies).map(db.fromGain);
+
+		analyser.getFloatFrequencyData(frequencies);
+		spectrogram.push(frequencies);
+	}, 50);
+})
+.on('pause', function () {
+	clearInterval(this.pushInterval);
+})

@@ -30,6 +30,9 @@ function Spectrogram (options) {
 
 	if (isBrowser) this.container.classList.add('gl-spectrogram');
 
+	//save texture location
+	this.textureLocation = gl.getUniformLocation(this.program, 'texture');
+
 	var size = [1024, 512];
 
 	this.shiftComponent = Component({
@@ -81,6 +84,7 @@ function Spectrogram (options) {
 			}
 		`,
 		phase: 0,
+		spectrogram: this,
 		framebuffer: gl.createFramebuffer(),
 		render: function () {
 			var gl = this.gl;
@@ -100,6 +104,9 @@ function Spectrogram (options) {
 			this.draw(this);
 
 			gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+			gl.useProgram(this.spectrogram.program);
+			gl.uniform1i(this.spectrogram.textureLocation, this.phase);
 		},
 		autostart: false,
 		float: this.float,
@@ -107,25 +114,13 @@ function Spectrogram (options) {
 	});
 
 	//preset initial freqs
-	this.setFrequencies(this.frequencies);
+	this.push(this.frequencies);
 
+	//init style props
+	this.update();
 }
 
 inherits(Spectrogram, Component);
-
-//render, shifting the texture
-Spectrogram.prototype.render = function () {
-	var gl = this.gl;
-
-
-	this.shiftComponent.render();
-
-	gl.useProgram(this.program);
-	var loc = gl.getUniformLocation(this.program, 'texture');
-	gl.uniform1i(loc, this.shiftComponent.phase);
-
-	Component.prototype.render.call(this);
-};
 
 
 //default renderer just outputs active texture
@@ -158,12 +153,8 @@ Spectrogram.prototype.minFrequency = 20;
 Spectrogram.prototype.smoothing = 0.75;
 Spectrogram.prototype.details = 1;
 
-Spectrogram.prototype.snap = null;
-Spectrogram.prototype.group = false;
-
 Spectrogram.prototype.grid = true;
 Spectrogram.prototype.axes = false;
-Spectrogram.prototype.map = true;
 Spectrogram.prototype.logarithmic = true;
 Spectrogram.prototype.weighting = 'itu';
 Spectrogram.prototype.sampleRate = 44100;
@@ -179,8 +170,8 @@ Spectrogram.prototype.frequencies = Array(1024).fill(-150);
 
 
 //set last actual frequencies values
-Spectrogram.prototype.setFrequencies = function (frequencies) {
-	if (!frequencies) return this;
+Spectrogram.prototype.push = function (frequencies) {
+	if (!frequencies) frequencies = [-150];
 
 	var gl = this.gl;
 	var minF = this.minFrequency, maxF = this.maxFrequency;
@@ -215,5 +206,68 @@ Spectrogram.prototype.setFrequencies = function (frequencies) {
 	//map mags to 0..255 range limiting by db subrange
 	magnitudes = magnitudes.map((value) => clamp(255 * (value - minDb) / (maxDb - minDb), 0, 255));
 
-	return this.shiftComponent.setTexture('frequencies', magnitudes);
+	this.shiftComponent.setTexture('frequencies', magnitudes);
+
+	//do shift
+	this.shiftComponent.render();
+
+	return this;
 };
+
+
+//update view
+Spectrogram.prototype.update = function () {
+	var gl = this.gl;
+
+	if (this.grid) {
+		this.gridComponent = createGrid({
+			container: this.container,
+			viewport: () => this.viewport,
+			lines: Array.isArray(this.grid.lines) ? this.grid.lines : (this.grid.lines === undefined || this.grid.lines === true) && [{
+				min: this.minFrequency,
+				max: this.maxFrequency,
+				orientation: 'y',
+				logarithmic: this.logarithmic,
+				titles: function (value) {
+					return (value >= 1000 ? ((value / 1000).toLocaleString() + 'k') : value.toLocaleString()) + 'Hz';
+				}
+			}, this.logarithmic ? {
+				min: this.minFrequency,
+				max: this.maxFrequency,
+				orientation: 'y',
+				logarithmic: this.logarithmic,
+				values: function (value) {
+					var str = value.toString();
+					if (str[0] !== '1') return null;
+					return value;
+				},
+				titles: null,
+				style: {
+					borderLeftStyle: 'solid',
+					pointerEvents: 'none',
+					opacity: '0.08',
+					display: this.logarithmic ? null :'none'
+				}
+			} : null],
+			axes: Array.isArray(this.grid.axes) ? this.grid.axes : (this.grid.axes || this.axes) && [{
+				name: 'Frequency',
+				labels: function (value, i, opt) {
+					var str = value.toString();
+					if (str[0] !== '2' && str[0] !== '1' && str[0] !== '5') return null;
+					return opt.titles[i];
+				}
+			}]
+		});
+
+		this.on('resize', () => {
+			if (this.isPlannedGridUpdate) return;
+			this.isPlannedGridUpdate = true;
+			this.once('render', () => {
+				this.isPlannedGridUpdate = false;
+				this.gridComponent.update();
+			});
+		});
+	}
+
+	this.container.style.color = 'white';
+}
