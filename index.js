@@ -6305,8 +6305,8 @@ var app = startApp({
 })
 .on('ready', function (node) {
 	source = node;
+	source.disconnect();
 	source.connect(analyser);
-
 })
 .on('play', function () {
 	this.pushInterval = setInterval(function () {
