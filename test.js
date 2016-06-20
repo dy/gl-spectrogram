@@ -5,7 +5,10 @@ var ft = require('fourier-transform');
 var ctx = require('audio-context');
 
 
+//playback speed
+var speed = 100;
 
+//analyser
 var source = null;
 var analyser = ctx.createAnalyser();
 analyser.frequencyBinCount = 2048;
@@ -45,46 +48,84 @@ var spectrogram = Spectrogram({
 
 var app = startApp({
 	color: 'white',
-	source: 'https://soundcloud.com/esteban-lara/sets/8daycasts',
-	// params: {
-	// 	weighting: {
-	// 		values: {
-	// 			itu: 'itu',
-	// 			a: 'a',
-	// 			b: 'b',
-	// 			c: 'c',
-	// 			d: 'd',
-	// 			z: 'z'
-	// 		},
-	// 		value: spectrogram.weighting
-	// 	},
-	// 	logarithmic: spectrogram.logarithmic,
-	// 	grid: spectrogram.grid,
-	// 	axes: spectrogram.axes,
-	// 	smoothing: {
-	// 		min: 0,
-	// 		max: 1,
-	// 		step: .01,
-	// 		value: spectrogram.smoothing
-	// 	}
-	// }
-})
-.on('ready', function (node) {
-	source = node;
-	source.connect(analyser);
+	source: 'https://soundcloud.com/xlr8r/sets/xlr8r-top-10-downloads-of-may',
+	params: {
+		// fill: {
+		// 	type: 'text',
+		// 	values: colormaps,
+		// 	value: colormap,
+		// 	change: (value, state) => {
+		// 		spectrum.setFill(value, app.getParamValue('inversed'));
+		// 		updateView();
+		// 	}
+		// },
+		weighting: {
+			values: {
+				itu: 'itu',
+				a: 'a',
+				b: 'b',
+				c: 'c',
+				d: 'd',
+				z: 'z'
+			},
+			value: spectrogram.weighting
+		},
+		logarithmic: spectrogram.logarithmic,
+		grid: spectrogram.grid,
+		axes: spectrogram.axes,
+		smoothing: {
+			min: 0,
+			max: 1,
+			step: .01,
+			value: spectrogram.smoothing,
+			change: (v) => {
+				spectrogram.smoothing = v;
+			}
+		},
+	}
+});
 
+//non-spectrogram params
+// app.addParam('randomize', {
+// 	type: 'button'
+// });
+// app.addParam('contrast', {
+// 	type: 'range'
+// });
+app.addParam('speed', {
+	type: 'range',
+	value: speed,
+	min: 1,
+	//4ms is minimal interval for HTML5 (250 times per second)
+	max: 250,
+	change: (v) => {
+		speed = v;
+	}
+});
+
+
+
+var pushIntervalId;
+app.on('ready', function (node) {
+	source = node;
+	source.disconnect();
+	source.connect(analyser);
 })
 .on('play', function () {
-	this.pushInterval = setInterval(() => {
-		// for (var i = 0; i < N; i++) {
-		// 	frequencies[i] = Math.sin(10000 * Math.PI * 2 * (i / rate));
-		// }
-		// frequencies = ft(frequencies).map(db.fromGain);
-
-		analyser.getFloatFrequencyData(frequencies);
-		spectrogram.push(frequencies);
-	}, 50);
+	pushChunk();
 })
 .on('pause', function () {
-	clearInterval(this.pushInterval);
-})
+	clearInterval(pushIntervalId);
+});
+
+function pushChunk () {
+	// for (var i = 0; i < N; i++) {
+	// 	frequencies[i] = Math.sin(10000 * Math.PI * 2 * (i / rate));
+	// }
+	// frequencies = ft(frequencies).map(db.fromGain);
+
+	analyser.getFloatFrequencyData(frequencies);
+	spectrogram.push(frequencies);
+
+	pushIntervalId = setTimeout(pushChunk, 1000 / speed);
+}

@@ -8,11 +8,14 @@ var Component = require('gl-component');
 var inherits = require('inherits');
 var isBrowser = require('is-browser');
 var createGrid = require('plot-grid');
-var colormap = require('colormap');
 var flatten = require('flatten');
 var lg = require('mumath/lg');
 var clamp = require('mumath/clamp');
 var weighting = require('a-weighting');
+var colormap = require('colormap');
+var parseColor = require('color-parse');
+var hsl = require('color-space/hsl');
+var colorScales = require('colormap/colorScales');
 
 module.exports = Spectrogram;
 
@@ -29,6 +32,14 @@ function Spectrogram (options) {
 	var gl = this.gl;
 
 	if (isBrowser) this.container.classList.add('gl-spectrogram');
+
+	//preset colormap texture
+	this.setTexture('colormap', {
+		unit: 3,
+		type: gl.UNSIGNED_BYTE,
+		filter: gl.LINEAR,
+		wrap: gl.CLAMP_TO_EDGE,
+	});
 
 	//save texture location
 	this.textureLocation = gl.getUniformLocation(this.program, 'texture');
@@ -128,14 +139,14 @@ Spectrogram.prototype.frag = `
 	precision highp float;
 
 	uniform sampler2D texture;
-	// uniform sampler2D colormap;
+	uniform sampler2D colormap;
 	uniform vec4 viewport;
 
 	void main () {
 		vec2 coord = (gl_FragCoord.xy - viewport.xy) / viewport.zw;
-		// float intensity = texture2D(texture, coord).y;
+		float intensity = texture2D(texture, coord).x;
+		gl_FragColor = vec4(vec3(texture2D(colormap, vec2(intensity, coord.y) )), 1);
 		// gl_FragColor = vec4(vec3(intensity), 1);
-		gl_FragColor = vec4(vec3(texture2D(texture, coord).xyz), 1);
 	}
 `;
 
@@ -160,7 +171,6 @@ Spectrogram.prototype.weighting = 'itu';
 Spectrogram.prototype.sampleRate = 44100;
 
 Spectrogram.prototype.fill = 'greys';
-Spectrogram.prototype.balance = .65;
 Spectrogram.prototype.background = undefined;
 
 
@@ -215,11 +225,118 @@ Spectrogram.prototype.push = function (frequencies) {
 };
 
 
+/**
+ * Reset colormap
+ */
+Spectrogram.prototype.setFill = function (cm, inverse) {
+	this.fill = cm;
+
+	//named colormap
+	if (typeof cm === 'string') {
+		//a color scale
+		if (colorScales[cm]) {
+			var cm = (flatten(colormap({
+				colormap: cm,
+				nshades: 128,
+				format: 'rgba',
+				alpha: 1
+			})));//.map((v,i) => !((i + 1) % 4) ? v : v/255));
+		}
+		//url
+		else if (/\\|\//.test(cm)) {
+			this.setTexture('fill', cm);
+			return this;
+		}
+		//plain color or CSS color string
+		else {
+			var parsed = parseColor(cm);
+
+			if (parsed.space === 'hsl') {
+				cm = hsl.rgb(parsed.values);
+			}
+			else {
+				cm = parsed.values;
+			}
+		}
+	}
+	else if (!cm) {
+		if (!this.background) this.setBackground([1,1,1,1]);
+		return this;
+	}
+	//image, canvas etc
+	else if (!Array.isArray(cm)) {
+		this.setTexture('fill', cm);
+
+		return this;
+	}
+	//custom array, like palette etc.
+	else {
+		cm = flatten(cm);
+	}
+
+	if (inverse) {
+		var reverse = cm.slice();
+		for (var i = 0; i < cm.length; i+=4){
+			reverse[cm.length - i - 1] = cm[i + 3];
+			reverse[cm.length - i - 2] = cm[i + 2];
+			reverse[cm.length - i - 3] = cm[i + 1];
+			reverse[cm.length - i - 4] = cm[i + 0];
+		}
+		cm = reverse;
+	}
+
+	this.setTexture('colormap', {
+		data: cm,
+		height: 1,
+		width: (cm.length / 4)|0
+	});
+
+	//ensure bg
+	if (!this.background) {
+		this.setBackground(cm.slice(0, 4));
+	}
+
+	//set grid color to colormap’s color
+	if (this.gridComponent) {
+		var gridColor = cm.slice(-4);
+		this.gridComponent.linesContainer.style.color = `rgba(${gridColor})`;
+	}
+
+	return this;
+};
+
+
+/** Set background */
+Spectrogram.prototype.setBackground = function (bg) {
+	if (this.background !== null) {
+		var bgStyle = null;
+		if (typeof bg === 'string') {
+			bgStyle = bg;
+		}
+		else if (Array.isArray(bg)) {
+			//map 0..1 range to 0..255
+			if (bg[0] && bg[0] <= 1 && bg[1] && bg[1] <= 1 && bg[2] && bg[2] <= 1) {
+				bg = [
+					bg[0] * 255, bg[1] * 255, bg[2] * 255, bg[3] || 1
+				];
+			}
+
+			bgStyle = `rgba(${bg.slice(0,3).map(v => Math.round(v)).join(', ')}, ${bg[3]})`;
+		}
+		this.canvas.style.background = bgStyle;
+	}
+
+	return this;
+};
+
+
+
+
 //update view
 Spectrogram.prototype.update = function () {
 	var gl = this.gl;
 
-	if (this.grid) {
+	if (this.grid && !this.gridComponent) {
 		this.gridComponent = createGrid({
 			container: this.container,
 			viewport: () => this.viewport,
@@ -268,6 +385,11 @@ Spectrogram.prototype.update = function () {
 			});
 		});
 	}
+	else {
+
+	}
+
+	this.setFill(this.fill);
 
 	this.container.style.color = 'white';
-}
+};
