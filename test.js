@@ -71,7 +71,13 @@ var app = startApp({
 			value: spectrogram.weighting
 		},
 		logarithmic: spectrogram.logarithmic,
-		grid: spectrogram.grid,
+		grid: {
+			value: spectrogram.grid,
+			change: (v) => {
+				spectrogram.grid = v;
+				spectrogram.update();
+			}
+		},
 		axes: spectrogram.axes,
 		smoothing: {
 			min: 0,

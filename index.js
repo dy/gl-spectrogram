@@ -336,57 +336,62 @@ Spectrogram.prototype.setBackground = function (bg) {
 Spectrogram.prototype.update = function () {
 	var gl = this.gl;
 
-	if (this.grid && !this.gridComponent) {
-		this.gridComponent = createGrid({
-			container: this.container,
-			viewport: () => this.viewport,
-			lines: Array.isArray(this.grid.lines) ? this.grid.lines : (this.grid.lines === undefined || this.grid.lines === true) && [{
-				min: this.minFrequency,
-				max: this.maxFrequency,
-				orientation: 'y',
-				logarithmic: this.logarithmic,
-				titles: function (value) {
-					return (value >= 1000 ? ((value / 1000).toLocaleString() + 'k') : value.toLocaleString()) + 'Hz';
-				}
-			}, this.logarithmic ? {
-				min: this.minFrequency,
-				max: this.maxFrequency,
-				orientation: 'y',
-				logarithmic: this.logarithmic,
-				values: function (value) {
-					var str = value.toString();
-					if (str[0] !== '1') return null;
-					return value;
-				},
-				titles: null,
-				style: {
-					borderLeftStyle: 'solid',
-					pointerEvents: 'none',
-					opacity: '0.08',
-					display: this.logarithmic ? null :'none'
-				}
-			} : null],
-			axes: Array.isArray(this.grid.axes) ? this.grid.axes : (this.grid.axes || this.axes) && [{
-				name: 'Frequency',
-				labels: function (value, i, opt) {
-					var str = value.toString();
-					if (str[0] !== '2' && str[0] !== '1' && str[0] !== '5') return null;
-					return opt.titles[i];
-				}
-			}]
-		});
-
-		this.on('resize', () => {
-			if (this.isPlannedGridUpdate) return;
-			this.isPlannedGridUpdate = true;
-			this.once('render', () => {
-				this.isPlannedGridUpdate = false;
-				this.gridComponent.update();
+	if (this.grid) {
+		if (!this.gridComponent) {
+			this.gridComponent = createGrid({
+				container: this.container,
+				viewport: () => this.viewport,
+				lines: Array.isArray(this.grid.lines) ? this.grid.lines : (this.grid.lines === undefined || this.grid.lines === true) && [{
+					min: this.minFrequency,
+					max: this.maxFrequency,
+					orientation: 'y',
+					logarithmic: this.logarithmic,
+					titles: function (value) {
+						return (value >= 1000 ? ((value / 1000).toLocaleString() + 'k') : value.toLocaleString()) + 'Hz';
+					}
+				}, this.logarithmic ? {
+					min: this.minFrequency,
+					max: this.maxFrequency,
+					orientation: 'y',
+					logarithmic: this.logarithmic,
+					values: function (value) {
+						var str = value.toString();
+						if (str[0] !== '1') return null;
+						return value;
+					},
+					titles: null,
+					style: {
+						borderLeftStyle: 'solid',
+						pointerEvents: 'none',
+						opacity: '0.08',
+						display: this.logarithmic ? null :'none'
+					}
+				} : null],
+				axes: Array.isArray(this.grid.axes) ? this.grid.axes : (this.grid.axes || this.axes) && [{
+					name: 'Frequency',
+					labels: function (value, i, opt) {
+						var str = value.toString();
+						if (str[0] !== '2' && str[0] !== '1' && str[0] !== '5') return null;
+						return opt.titles[i];
+					}
+				}]
 			});
-		});
-	}
-	else {
 
+			this.on('resize', () => {
+				if (this.isPlannedGridUpdate) return;
+				this.isPlannedGridUpdate = true;
+				this.once('render', () => {
+					this.isPlannedGridUpdate = false;
+					this.gridComponent.update();
+				});
+			});
+		}
+		else {
+			this.gridComponent.linesContainer.style.display = 'block';
+		}
+	}
+	else if (this.gridComponent) {
+		this.gridComponent.linesContainer.style.display = 'none';
 	}
 
 	this.setFill(this.fill);
