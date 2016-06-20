@@ -68,12 +68,15 @@ var app = startApp({
 				d: 'd',
 				z: 'z'
 			},
-			value: spectrogram.weighting
+			value: spectrogram.weighting,
+			change: v => {
+				spectrogram.weighting = v;
+			}
 		},
 		logarithmic: spectrogram.logarithmic,
 		grid: {
 			value: spectrogram.grid,
-			change: (v) => {
+			change: v => {
 				spectrogram.grid = v;
 				spectrogram.update();
 			}
@@ -84,7 +87,7 @@ var app = startApp({
 			max: 1,
 			step: .01,
 			value: spectrogram.smoothing,
-			change: (v) => {
+			change: v => {
 				spectrogram.smoothing = v;
 			}
 		},
