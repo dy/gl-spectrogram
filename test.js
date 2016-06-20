@@ -11,13 +11,13 @@ var speed = 100;
 //analyser
 var source = null;
 var analyser = ctx.createAnalyser();
-analyser.frequencyBinCount = 2048;
+analyser.frequencyBinCount = 4096;
 analyser.smoothingTimeConstant = .1;
 analyser.connect(ctx.destination);
 
 
 //generate input sine
-var N = 2048;
+var N = 4096;
 var sine = Array(N);
 var saw = Array(N);
 var noise = Array(N);
@@ -39,7 +39,7 @@ var frequencies = new Float32Array(analyser.frequencyBinCount);
 
 var spectrogram = Spectrogram({
 	smoothing: .2,
-	logarithmic: false,
+	// logarithmic: false,
 	// autostart: false
 	// weighting:
 });
@@ -73,7 +73,13 @@ var app = startApp({
 				spectrogram.weighting = v;
 			}
 		},
-		logarithmic: spectrogram.logarithmic,
+		logarithmic: {
+			value: spectrogram.logarithmic,
+			change: v => {
+				spectrogram.logarithmic = v;
+				spectrogram.update();
+			}
+		},
 		grid: {
 			value: spectrogram.grid,
 			change: v => {
@@ -129,7 +135,7 @@ app.on('ready', function (node) {
 
 function pushChunk () {
 	// for (var i = 0; i < N; i++) {
-	// 	frequencies[i] = Math.sin(10000 * Math.PI * 2 * (i / rate));
+	// 	frequencies[i] = Math.sin(15000 * Math.PI * 2 * (i / rate));
 	// }
 	// frequencies = ft(frequencies).map(db.fromGain);
 

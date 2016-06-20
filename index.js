@@ -43,6 +43,10 @@ function Spectrogram (options) {
 
 	//save texture location
 	this.textureLocation = gl.getUniformLocation(this.program, 'texture');
+	this.maxFrequencyLocation = gl.getUniformLocation(this.program, 'maxFrequency');
+	this.minFrequencyLocation = gl.getUniformLocation(this.program, 'minFrequency');
+	this.logarithmicLocation = gl.getUniformLocation(this.program, 'logarithmic');
+	this.sampleRateLocation = gl.getUniformLocation(this.program, 'sampleRate');
 
 	var size = [1024, 512];
 
@@ -54,7 +58,7 @@ function Spectrogram (options) {
 				data: null,
 				format: gl.RGBA,
 				type: gl.UNSIGNED_BYTE,
-				filter: gl.NEAREST,
+				filter: gl.LINEAR,
 				wrap: gl.CLAMP_TO_EDGE,
 				width: size[0],
 				height: size[1]
@@ -64,7 +68,7 @@ function Spectrogram (options) {
 				data: null,
 				format: gl.RGBA,
 				type: gl.UNSIGNED_BYTE,
-				filter: gl.NEAREST,
+				filter: gl.LINEAR,
 				wrap: gl.CLAMP_TO_EDGE,
 				width: size[0],
 				height: size[1]
@@ -141,10 +145,42 @@ Spectrogram.prototype.frag = `
 	uniform sampler2D texture;
 	uniform sampler2D colormap;
 	uniform vec4 viewport;
+	uniform float sampleRate;
+	uniform float maxFrequency;
+	uniform float minFrequency;
+	uniform float logarithmic;
+
+
+	const float log10 = ${Math.log(10)};
+
+	float lg (float x) {
+		return log(x) / log10;
+	}
+
+	//return a or b based on weight
+	float decide (float a, float b, float w) {
+		return step(0.5, w) * b + step(w, 0.5) * a;
+	}
+
+	//get mapped frequency
+	float f (float ratio) {
+		float halfRate = sampleRate * .5;
+
+		float logF = pow(10., lg(minFrequency) + ratio * (lg(maxFrequency) - lg(minFrequency)) );
+
+		ratio = decide(ratio, (logF - minFrequency) / (maxFrequency - minFrequency), logarithmic);
+
+		float leftF = minFrequency / halfRate;
+		float rightF = maxFrequency / halfRate;
+
+		ratio = leftF + ratio * (rightF - leftF);
+
+		return ratio;
+	}
 
 	void main () {
 		vec2 coord = (gl_FragCoord.xy - viewport.xy) / viewport.zw;
-		float intensity = texture2D(texture, coord).x;
+		float intensity = texture2D(texture, vec2(coord.x, f(coord.y))).x;
 		gl_FragColor = vec4(vec3(texture2D(colormap, vec2(intensity, coord.y) )), 1);
 		// gl_FragColor = vec4(vec3(intensity), 1);
 	}
@@ -159,7 +195,7 @@ Spectrogram.prototype.maxDecibels = -0;
 Spectrogram.prototype.minDecibels = -100;
 
 Spectrogram.prototype.maxFrequency = 20000;
-Spectrogram.prototype.minFrequency = 20;
+Spectrogram.prototype.minFrequency = 40;
 
 Spectrogram.prototype.smoothing = 0.75;
 Spectrogram.prototype.details = 1;
@@ -393,6 +429,11 @@ Spectrogram.prototype.update = function () {
 	else if (this.gridComponent) {
 		this.gridComponent.linesContainer.style.display = 'none';
 	}
+
+	this.gl.uniform1f(this.minFrequencyLocation, this.minFrequency);
+	this.gl.uniform1f(this.maxFrequencyLocation, this.maxFrequency);
+	this.gl.uniform1f(this.logarithmicLocation, this.logarithmic ? 1 : 0);
+	this.gl.uniform1f(this.sampleRateLocation, this.sampleRate);
 
 	this.setFill(this.fill);
 
