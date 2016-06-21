@@ -3,10 +3,35 @@ var Spectrogram = require('./');
 var db = require('decibels');
 var ft = require('fourier-transform');
 var ctx = require('audio-context');
+var colorScales = require('colormap/colorScales');
+var palettes = require('nice-color-palettes/200');
+var colorParse = require('color-parse');
+var flatten = require('flatten');
 
+
+palettes = palettes
+	.map((palette) => {
+		return palette.map(v => {
+			var parsed = colorParse(v);
+			parsed.values.push(1);
+			return parsed.values;
+		})
+	})
+	.filter((palette) => {
+		var start = palette[0], end = palette[palette.length - 1];
+		var leftLightness = (start[0] * 299 + start[1] * 587 + start[2] * 114) / (1000);
+		var rightLightness = (end[0] * 299 + end[1] * 587 + end[2] * 114) / (1000);
+		if (Math.abs(leftLightness - rightLightness) < 128) {
+			return false;
+		}
+		return true;
+	});
 
 //playback speed
 var speed = 100;
+
+//pick random palette
+var palette = palettes[(Math.random() * palettes.length)|0];
 
 //analyser
 var source = null;
@@ -38,27 +63,45 @@ var frequencies = new Float32Array(analyser.frequencyBinCount);
 // frequencies = frequencies.map((v) => db.fromGain(v));
 
 var spectrogram = Spectrogram({
-	smoothing: .2,
+	smoothing: .1,
+	fill: palette,
 	// logarithmic: false,
 	// autostart: false
 	// weighting:
 });
 
 
-
 var app = startApp({
-	color: 'white',
+	color: palette[palette.length - 1],
 	source: 'https://soundcloud.com/xlr8r/sets/xlr8r-top-10-downloads-of-may',
 	params: {
-		// fill: {
-		// 	type: 'text',
-		// 	values: colormaps,
-		// 	value: colormap,
-		// 	change: (value, state) => {
-		// 		spectrum.setFill(value, app.getParamValue('inversed'));
-		// 		updateView();
-		// 	}
-		// },
+		fill: {
+			type: 'select',
+			values: (() => {
+				var values = {};
+				for (var name in colorScales) {
+					if (name === 'alpha') continue;
+					if (name === 'hsv') continue;
+					if (name === 'rainbow') continue;
+					if (name === 'rainbow-soft') continue;
+					if (name === 'phase') continue;
+					values[name] = name;
+				}
+				return values;
+			})(),
+			value: 'greys',
+			change: function (value, state) {
+				spectrogram.setFill(value, this.getParamValue('inversed'));
+				this.setColor(spectrogram.color);
+			}
+		},
+		inversed: {
+			value: false,
+			change: function (value) {
+				spectrogram.setFill(this.getParamValue('fill'), value);
+				this.setColor(spectrogram.color);
+			}
+		},
 		weighting: {
 			values: {
 				itu: 'itu',
@@ -87,7 +130,7 @@ var app = startApp({
 				spectrogram.update();
 			}
 		},
-		axes: spectrogram.axes,
+		// axes: spectrogram.axes,
 		smoothing: {
 			min: 0,
 			max: 1,
@@ -97,27 +140,38 @@ var app = startApp({
 				spectrogram.smoothing = v;
 			}
 		},
+		speed: {
+			type: 'range',
+			value: speed,
+			min: 1,
+			//4ms is minimal interval for HTML5 (250 times per second)
+			max: 250,
+			change: (v) => {
+				speed = v;
+			}
+		},
+		minDecibels: {
+			type: 'range',
+			value: spectrogram.minDecibels,
+			min: -100,
+			max: 0,
+			change: (v) => {
+				spectrogram.minDecibels = v;
+				spectrogram.update();
+			}
+		},
+		maxDecibels: {
+			type: 'range',
+			value: spectrogram.maxDecibels,
+			min: -100,
+			max: 0,
+			change: (v) => {
+				spectrogram.maxDecibels = v;
+				spectrogram.update();
+			}
+		}
 	}
 });
-
-//non-spectrogram params
-// app.addParam('randomize', {
-// 	type: 'button'
-// });
-// app.addParam('contrast', {
-// 	type: 'range'
-// });
-app.addParam('speed', {
-	type: 'range',
-	value: speed,
-	min: 1,
-	//4ms is minimal interval for HTML5 (250 times per second)
-	max: 250,
-	change: (v) => {
-		speed = v;
-	}
-});
-
 
 
 var pushIntervalId;
@@ -135,7 +189,7 @@ app.on('ready', function (node) {
 
 function pushChunk () {
 	// for (var i = 0; i < N; i++) {
-	// 	frequencies[i] = Math.sin(15000 * Math.PI * 2 * (i / rate));
+	// 	frequencies[i] = Math.sin(10000 * Math.PI * 2 * (i / rate));
 	// }
 	// frequencies = ft(frequencies).map(db.fromGain);
 

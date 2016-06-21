@@ -45,6 +45,8 @@ function Spectrogram (options) {
 	this.textureLocation = gl.getUniformLocation(this.program, 'texture');
 	this.maxFrequencyLocation = gl.getUniformLocation(this.program, 'maxFrequency');
 	this.minFrequencyLocation = gl.getUniformLocation(this.program, 'minFrequency');
+	this.maxDecibelsLocation = gl.getUniformLocation(this.program, 'maxDecibels');
+	this.minDecibelsLocation = gl.getUniformLocation(this.program, 'minDecibels');
 	this.logarithmicLocation = gl.getUniformLocation(this.program, 'logarithmic');
 	this.sampleRateLocation = gl.getUniformLocation(this.program, 'sampleRate');
 
@@ -148,6 +150,8 @@ Spectrogram.prototype.frag = `
 	uniform float sampleRate;
 	uniform float maxFrequency;
 	uniform float minFrequency;
+	uniform float maxDecibels;
+	uniform float minDecibels;
 	uniform float logarithmic;
 
 
@@ -181,6 +185,7 @@ Spectrogram.prototype.frag = `
 	void main () {
 		vec2 coord = (gl_FragCoord.xy - viewport.xy) / viewport.zw;
 		float intensity = texture2D(texture, vec2(coord.x, f(coord.y))).x;
+		intensity = (intensity * 100. - minDecibels - 100.) / (maxDecibels - minDecibels);
 		gl_FragColor = vec4(vec3(texture2D(colormap, vec2(intensity, coord.y) )), 1);
 		// gl_FragColor = vec4(vec3(intensity), 1);
 	}
@@ -191,8 +196,8 @@ Spectrogram.prototype.premultipliedAlpha = true;
 Spectrogram.prototype.alpha = true;
 Spectrogram.prototype.float = false;
 
-Spectrogram.prototype.maxDecibels = -0;
-Spectrogram.prototype.minDecibels = -100;
+Spectrogram.prototype.maxDecibels = -30;
+Spectrogram.prototype.minDecibels = -90;
 
 Spectrogram.prototype.maxFrequency = 20000;
 Spectrogram.prototype.minFrequency = 40;
@@ -220,8 +225,6 @@ Spectrogram.prototype.push = function (frequencies) {
 	if (!frequencies) frequencies = [-150];
 
 	var gl = this.gl;
-	var minF = this.minFrequency, maxF = this.maxFrequency;
-	var minDb = this.minDecibels, maxDb = this.maxDecibels;
 	var halfRate = this.sampleRate * 0.5;
 	var l = halfRate / this.frequencies.length;
 
@@ -250,7 +253,7 @@ Spectrogram.prototype.push = function (frequencies) {
 	}
 
 	//map mags to 0..255 range limiting by db subrange
-	magnitudes = magnitudes.map((value) => clamp(255 * (value - minDb) / (maxDb - minDb), 0, 255));
+	magnitudes = magnitudes.map((value) => clamp(255 * (1 + value / 100), 0, 255));
 
 	this.shiftComponent.setTexture('frequencies', magnitudes);
 
@@ -266,6 +269,7 @@ Spectrogram.prototype.push = function (frequencies) {
  */
 Spectrogram.prototype.setFill = function (cm, inverse) {
 	this.fill = cm;
+	this.inversed = inverse;
 
 	//named colormap
 	if (typeof cm === 'string') {
@@ -296,7 +300,7 @@ Spectrogram.prototype.setFill = function (cm, inverse) {
 		}
 	}
 	else if (!cm) {
-		if (!this.background) this.setBackground([1,1,1,1]);
+		if (!this.background) this.setBackground([0,0,0,1]);
 		return this;
 	}
 	//image, canvas etc
@@ -332,10 +336,12 @@ Spectrogram.prototype.setFill = function (cm, inverse) {
 		this.setBackground(cm.slice(0, 4));
 	}
 
+	var mainColor = cm.slice(-4);
+	this.color = `rgba(${mainColor})`;
+
 	//set grid color to colormap’s color
 	if (this.gridComponent) {
-		var gridColor = cm.slice(-4);
-		this.gridComponent.linesContainer.style.color = `rgba(${gridColor})`;
+		this.gridComponent.linesContainer.style.color = this.color;
 	}
 
 	return this;
@@ -432,10 +438,10 @@ Spectrogram.prototype.update = function () {
 
 	this.gl.uniform1f(this.minFrequencyLocation, this.minFrequency);
 	this.gl.uniform1f(this.maxFrequencyLocation, this.maxFrequency);
+	this.gl.uniform1f(this.minDecibelsLocation, this.minDecibels);
+	this.gl.uniform1f(this.maxDecibelsLocation, this.maxDecibels);
 	this.gl.uniform1f(this.logarithmicLocation, this.logarithmic ? 1 : 0);
 	this.gl.uniform1f(this.sampleRateLocation, this.sampleRate);
 
-	this.setFill(this.fill);
-
-	this.container.style.color = 'white';
+	this.setFill(this.fill, this.inversed);
 };

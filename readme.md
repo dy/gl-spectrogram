@@ -50,3 +50,8 @@ setTimeout(() => {
 * [gl-spectrum](https://github.com/audio-lab/gl-spectrum)
 * [plot-grid](https://github.com/audio-lab/plot-grid)
 * [start-app](https://github.com/audio-lab/start-app)
+
+## Inspiration
+
+* [colormap](https://github.com/bpostlethwaite/colormap)
+* [nice-color-palettes](https://github.com/Jam3/nice-color-palettes)
