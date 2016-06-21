@@ -6669,7 +6669,8 @@ var spectrogram = Spectrogram({
 
 var app = startApp({
 	color: palette[palette.length - 1],
-	source: 'https://soundcloud.com/xlr8r/sets/xlr8r-top-10-downloads-of-may',
+	// source: 'https://soundcloud.com/xlr8r/sets/xlr8r-top-10-downloads-of-may',
+	source: 'https://soundcloud.com/tycho/edc-sunrise',
 	params: {
 		fill: {
 			type: 'select',
