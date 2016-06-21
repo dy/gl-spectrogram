@@ -6661,6 +6661,8 @@ var frequencies = new Float32Array(analyser.frequencyBinCount);
 var spectrogram = Spectrogram({
 	smoothing: .1,
 	fill: palette,
+	maxDecibels: 0,
+	minDecibels: -50
 	// logarithmic: false,
 	// autostart: false
 	// weighting:
