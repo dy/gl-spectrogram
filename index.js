@@ -101,8 +101,10 @@ function Spectrogram (options) {
 				//do not shift if there is a room for the data
 				if (count < viewport.z - padding) {
 					vec3 color = texture2D(texture, coord).xyz;
-					float mixAmt = step(count, gl_FragCoord.x) * (count + padding - gl_FragCoord.x) / padding;
+					float mixAmt = step(count, gl_FragCoord.x);
 					color = mix(color, texture2D(frequencies, vec2(coord.y,.5)).www, mixAmt);
+					mixAmt *= (- count - padding + gl_FragCoord.x) / padding;
+					color = mix(color, vec3(0), mixAmt);
 					gl_FragColor = vec4(color, 1);
 				}
 				else {
@@ -110,6 +112,8 @@ function Spectrogram (options) {
 					vec3 color = texture2D(texture, coord).xyz;
 					float mixAmt = step(viewport.z - padding, gl_FragCoord.x);
 					color = mix(color, texture2D(frequencies, vec2(coord.y,.5)).www, mixAmt);
+					mixAmt *= (- viewport.z + gl_FragCoord.x) / padding;
+					color = mix(color, vec3(0), mixAmt);
 					gl_FragColor = vec4(color, 1);
 				}
 			}
