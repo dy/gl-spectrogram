@@ -8,7 +8,6 @@ var palettes = require('nice-color-palettes/200');
 var colorParse = require('color-parse');
 var flatten = require('flatten');
 
-
 palettes = palettes
 	.map((palette) => {
 		return palette.map(v => {

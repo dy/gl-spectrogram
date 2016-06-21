@@ -1,11 +1,11 @@
 {
   "name": "gl-spectrogram",
   "version": "1.0.0",
-  "description": "Draw spectrogram with webgl or canvas-2D",
+  "description": "Draw spectrogram with webgl",
   "main": "index.js",
   "scripts": {
     "test": "budo test.js",
-    "test:browser": "budo test.js",
+    "test:browser": "budo test.js -- -g bubleify",
     "build": "browserify test.js -g bubleify -o demo/index.js"
   },
   "repository": {
