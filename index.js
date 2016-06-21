@@ -2098,11 +2098,14 @@ var Component = require('gl-component');
 var inherits = require('inherits');
 var isBrowser = require('is-browser');
 var createGrid = require('plot-grid');
-var colormap = require('colormap');
 var flatten = require('flatten');
 var lg = require('mumath/lg');
 var clamp = require('mumath/clamp');
 var weighting = require('a-weighting');
+var colormap = require('colormap');
+var parseColor = require('color-parse');
+var hsl = require('color-space/hsl');
+var colorScales = require('colormap/colorScales');
 
 module.exports = Spectrogram;
 
@@ -2120,8 +2123,22 @@ function Spectrogram (options) {
 
 	if (isBrowser) this.container.classList.add('gl-spectrogram');
 
+	//preset colormap texture
+	this.setTexture('colormap', {
+		unit: 3,
+		type: gl.UNSIGNED_BYTE,
+		filter: gl.LINEAR,
+		wrap: gl.CLAMP_TO_EDGE,
+	});
+
 	//save texture location
 	this.textureLocation = gl.getUniformLocation(this.program, 'texture');
+	this.maxFrequencyLocation = gl.getUniformLocation(this.program, 'maxFrequency');
+	this.minFrequencyLocation = gl.getUniformLocation(this.program, 'minFrequency');
+	this.maxDecibelsLocation = gl.getUniformLocation(this.program, 'maxDecibels');
+	this.minDecibelsLocation = gl.getUniformLocation(this.program, 'minDecibels');
+	this.logarithmicLocation = gl.getUniformLocation(this.program, 'logarithmic');
+	this.sampleRateLocation = gl.getUniformLocation(this.program, 'sampleRate');
 
 	var size = [1024, 512];
 
@@ -2133,7 +2150,7 @@ function Spectrogram (options) {
 				data: null,
 				format: gl.RGBA,
 				type: gl.UNSIGNED_BYTE,
-				filter: gl.NEAREST,
+				filter: gl.LINEAR,
 				wrap: gl.CLAMP_TO_EDGE,
 				width: size[0],
 				height: size[1]
@@ -2143,7 +2160,7 @@ function Spectrogram (options) {
 				data: null,
 				format: gl.RGBA,
 				type: gl.UNSIGNED_BYTE,
-				filter: gl.NEAREST,
+				filter: gl.LINEAR,
 				wrap: gl.CLAMP_TO_EDGE,
 				width: size[0],
 				height: size[1]
@@ -2157,7 +2174,7 @@ function Spectrogram (options) {
 				wrap: gl.CLAMP_TO_EDGE
 			}
 		},
-		frag: "\n\t\t\tprecision highp float;\n\n\t\t\tuniform sampler2D texture;\n\t\t\tuniform sampler2D frequencies;\n\t\t\tuniform vec4 viewport;\n\n\t\t\tvoid main () {\n\t\t\t\tvec2 coord = vec2((vec2(gl_FragCoord.x + 1., gl_FragCoord.y) - viewport.xy) / viewport.zw);\n\t\t\t\tvec3 color = texture2D(texture, coord).xyz;\n\t\t\t\tif (gl_FragCoord.x - viewport.x >= viewport.z - 1.) {\n\t\t\t\t\tcolor = texture2D(frequencies, vec2(coord.y,.5)).www;\n\t\t\t\t}\n\t\t\t\tgl_FragColor = vec4(vec3(color), 1);\n\t\t\t}\n\t\t",
+		frag: "\n\t\t\tprecision highp float;\n\n\t\t\tuniform sampler2D texture;\n\t\t\tuniform sampler2D frequencies;\n\t\t\tuniform vec4 viewport;\n\t\t\tuniform float count;\n\n\t\t\tconst float padding = 5.;\n\n\t\t\tvoid main () {\n\t\t\t\tvec2 one = vec2(1) / viewport.zw;\n\t\t\t\tvec2 coord = gl_FragCoord.xy / viewport.zw;\n\n\t\t\t\t//do not shift if there is a room for the data\n\t\t\t\tif (count < viewport.z - padding) {\n\t\t\t\t\tvec3 color = texture2D(texture, coord).xyz;\n\t\t\t\t\tfloat mixAmt = step(count, gl_FragCoord.x) * (count + padding - gl_FragCoord.x) / padding;\n\t\t\t\t\tcolor = mix(color, texture2D(frequencies, vec2(coord.y,.5)).www, mixAmt);\n\t\t\t\t\tgl_FragColor = vec4(color, 1);\n\t\t\t\t}\n\t\t\t\telse {\n\t\t\t\t\tcoord.x += one.x;\n\t\t\t\t\tvec3 color = texture2D(texture, coord).xyz;\n\t\t\t\t\tfloat mixAmt = step(viewport.z - padding, gl_FragCoord.x);\n\t\t\t\t\tcolor = mix(color, texture2D(frequencies, vec2(coord.y,.5)).www, mixAmt);\n\t\t\t\t\tgl_FragColor = vec4(color, 1);\n\t\t\t\t}\n\t\t\t}\n\t\t",
 		phase: 0,
 		spectrogram: this,
 		framebuffer: gl.createFramebuffer(),
@@ -2188,6 +2205,10 @@ function Spectrogram (options) {
 		antialias: this.antialias
 	});
 
+	//hook up counter
+	this.shiftComponent.count = 0;
+	this.shiftComponent.countLocation = gl.getUniformLocation(this.shiftComponent.program, 'count');
+
 	//preset initial freqs
 	this.push(this.frequencies);
 
@@ -2199,18 +2220,18 @@ inherits(Spectrogram, Component);
 
 
 //default renderer just outputs active texture
-Spectrogram.prototype.frag = "\n\tprecision highp float;\n\n\tuniform sampler2D texture;\n\t// uniform sampler2D colormap;\n\tuniform vec4 viewport;\n\n\tvoid main () {\n\t\tvec2 coord = (gl_FragCoord.xy - viewport.xy) / viewport.zw;\n\t\t// float intensity = texture2D(texture, coord).y;\n\t\t// gl_FragColor = vec4(vec3(intensity), 1);\n\t\tgl_FragColor = vec4(vec3(texture2D(texture, coord).xyz), 1);\n\t}\n";
+Spectrogram.prototype.frag = "\n\tprecision highp float;\n\n\tuniform sampler2D texture;\n\tuniform sampler2D colormap;\n\tuniform vec4 viewport;\n\tuniform float sampleRate;\n\tuniform float maxFrequency;\n\tuniform float minFrequency;\n\tuniform float maxDecibels;\n\tuniform float minDecibels;\n\tuniform float logarithmic;\n\n\n\tconst float log10 = " + (Math.log(10)) + ";\n\n\tfloat lg (float x) {\n\t\treturn log(x) / log10;\n\t}\n\n\t//return a or b based on weight\n\tfloat decide (float a, float b, float w) {\n\t\treturn step(0.5, w) * b + step(w, 0.5) * a;\n\t}\n\n\t//get mapped frequency\n\tfloat f (float ratio) {\n\t\tfloat halfRate = sampleRate * .5;\n\n\t\tfloat logF = pow(10., lg(minFrequency) + ratio * (lg(maxFrequency) - lg(minFrequency)) );\n\n\t\tratio = decide(ratio, (logF - minFrequency) / (maxFrequency - minFrequency), logarithmic);\n\n\t\tfloat leftF = minFrequency / halfRate;\n\t\tfloat rightF = maxFrequency / halfRate;\n\n\t\tratio = leftF + ratio * (rightF - leftF);\n\n\t\treturn ratio;\n\t}\n\n\tvoid main () {\n\t\tvec2 coord = (gl_FragCoord.xy - viewport.xy) / viewport.zw;\n\t\tfloat intensity = texture2D(texture, vec2(coord.x, f(coord.y))).x;\n\t\tintensity = (intensity * 100. - minDecibels - 100.) / (maxDecibels - minDecibels);\n\t\tgl_FragColor = vec4(vec3(texture2D(colormap, vec2(intensity, coord.y) )), 1);\n\t}\n";
 
 Spectrogram.prototype.antialias = false;
 Spectrogram.prototype.premultipliedAlpha = true;
 Spectrogram.prototype.alpha = true;
 Spectrogram.prototype.float = false;
 
-Spectrogram.prototype.maxDecibels = -0;
-Spectrogram.prototype.minDecibels = -100;
+Spectrogram.prototype.maxDecibels = -30;
+Spectrogram.prototype.minDecibels = -90;
 
 Spectrogram.prototype.maxFrequency = 20000;
-Spectrogram.prototype.minFrequency = 20;
+Spectrogram.prototype.minFrequency = 40;
 
 Spectrogram.prototype.smoothing = 0.75;
 Spectrogram.prototype.details = 1;
@@ -2222,7 +2243,6 @@ Spectrogram.prototype.weighting = 'itu';
 Spectrogram.prototype.sampleRate = 44100;
 
 Spectrogram.prototype.fill = 'greys';
-Spectrogram.prototype.balance = .65;
 Spectrogram.prototype.background = undefined;
 
 
@@ -2236,8 +2256,6 @@ Spectrogram.prototype.push = function (frequencies) {
 	if (!frequencies) frequencies = [-150];
 
 	var gl = this.gl;
-	var minF = this.minFrequency, maxF = this.maxFrequency;
-	var minDb = this.minDecibels, maxDb = this.maxDecibels;
 	var halfRate = this.sampleRate * 0.5;
 	var l = halfRate / this.frequencies.length;
 
@@ -2266,15 +2284,129 @@ Spectrogram.prototype.push = function (frequencies) {
 	}
 
 	//map mags to 0..255 range limiting by db subrange
-	magnitudes = magnitudes.map(function (value) { return clamp(255 * (value - minDb) / (maxDb - minDb), 0, 255); });
+	magnitudes = magnitudes.map(function (value) { return clamp(255 * (1 + value / 100), 0, 255); });
 
 	this.shiftComponent.setTexture('frequencies', magnitudes);
+
+	//update count
+	this.shiftComponent.count++;
+	gl.uniform1f(this.shiftComponent.countLocation, this.shiftComponent.count);
 
 	//do shift
 	this.shiftComponent.render();
 
 	return this;
 };
+
+
+/**
+ * Reset colormap
+ */
+Spectrogram.prototype.setFill = function (cm, inverse) {
+	this.fill = cm;
+	this.inversed = inverse;
+
+	//named colormap
+	if (typeof cm === 'string') {
+		//a color scale
+		if (colorScales[cm]) {
+			var cm = (flatten(colormap({
+				colormap: cm,
+				nshades: 128,
+				format: 'rgba',
+				alpha: 1
+			})));//.map((v,i) => !((i + 1) % 4) ? v : v/255));
+		}
+		//url
+		else if (/\\|\//.test(cm)) {
+			this.setTexture('fill', cm);
+			return this;
+		}
+		//plain color or CSS color string
+		else {
+			var parsed = parseColor(cm);
+
+			if (parsed.space === 'hsl') {
+				cm = hsl.rgb(parsed.values);
+			}
+			else {
+				cm = parsed.values;
+			}
+		}
+	}
+	else if (!cm) {
+		if (!this.background) this.setBackground([0,0,0,1]);
+		return this;
+	}
+	//image, canvas etc
+	else if (!Array.isArray(cm)) {
+		this.setTexture('fill', cm);
+
+		return this;
+	}
+	//custom array, like palette etc.
+	else {
+		cm = flatten(cm);
+	}
+
+	if (inverse) {
+		var reverse = cm.slice();
+		for (var i = 0; i < cm.length; i+=4){
+			reverse[cm.length - i - 1] = cm[i + 3];
+			reverse[cm.length - i - 2] = cm[i + 2];
+			reverse[cm.length - i - 3] = cm[i + 1];
+			reverse[cm.length - i - 4] = cm[i + 0];
+		}
+		cm = reverse;
+	}
+
+	this.setTexture('colormap', {
+		data: cm,
+		height: 1,
+		width: (cm.length / 4)|0
+	});
+
+	//ensure bg
+	if (!this.background) {
+		this.setBackground(cm.slice(0, 4));
+	}
+
+	var mainColor = cm.slice(-4);
+	this.color = "rgba(" + mainColor + ")";
+
+	//set grid color to colormap’s color
+	if (this.gridComponent) {
+		this.gridComponent.linesContainer.style.color = this.color;
+	}
+
+	return this;
+};
+
+
+/** Set background */
+Spectrogram.prototype.setBackground = function (bg) {
+	if (this.background !== null) {
+		var bgStyle = null;
+		if (typeof bg === 'string') {
+			bgStyle = bg;
+		}
+		else if (Array.isArray(bg)) {
+			//map 0..1 range to 0..255
+			if (bg[0] && bg[0] <= 1 && bg[1] && bg[1] <= 1 && bg[2] && bg[2] <= 1) {
+				bg = [
+					bg[0] * 255, bg[1] * 255, bg[2] * 255, bg[3] || 1
+				];
+			}
+
+			bgStyle = "rgba(" + (bg.slice(0,3).map(function (v) { return Math.round(v); }).join(', ')) + ", " + (bg[3]) + ")";
+		}
+		this.canvas.style.background = bgStyle;
+	}
+
+	return this;
+};
+
+
 
 
 //update view
@@ -2284,58 +2416,73 @@ Spectrogram.prototype.update = function () {
 	var gl = this.gl;
 
 	if (this.grid) {
-		this.gridComponent = createGrid({
-			container: this.container,
-			viewport: function () { return this$1.viewport; },
-			lines: Array.isArray(this.grid.lines) ? this.grid.lines : (this.grid.lines === undefined || this.grid.lines === true) && [{
-				min: this.minFrequency,
-				max: this.maxFrequency,
-				orientation: 'y',
-				logarithmic: this.logarithmic,
-				titles: function (value) {
-					return (value >= 1000 ? ((value / 1000).toLocaleString() + 'k') : value.toLocaleString()) + 'Hz';
-				}
-			}, this.logarithmic ? {
-				min: this.minFrequency,
-				max: this.maxFrequency,
-				orientation: 'y',
-				logarithmic: this.logarithmic,
-				values: function (value) {
-					var str = value.toString();
-					if (str[0] !== '1') return null;
-					return value;
-				},
-				titles: null,
-				style: {
-					borderLeftStyle: 'solid',
-					pointerEvents: 'none',
-					opacity: '0.08',
-					display: this.logarithmic ? null :'none'
-				}
-			} : null],
-			axes: Array.isArray(this.grid.axes) ? this.grid.axes : (this.grid.axes || this.axes) && [{
-				name: 'Frequency',
-				labels: function (value, i, opt) {
-					var str = value.toString();
-					if (str[0] !== '2' && str[0] !== '1' && str[0] !== '5') return null;
-					return opt.titles[i];
-				}
-			}]
-		});
-
-		this.on('resize', function () {
-			if (this$1.isPlannedGridUpdate) return;
-			this$1.isPlannedGridUpdate = true;
-			this$1.once('render', function () {
-				this$1.isPlannedGridUpdate = false;
-				this$1.gridComponent.update();
+		if (!this.gridComponent) {
+			this.gridComponent = createGrid({
+				container: this.container,
+				viewport: function () { return this$1.viewport; },
+				lines: Array.isArray(this.grid.lines) ? this.grid.lines : (this.grid.lines === undefined || this.grid.lines === true) && [{
+					min: this.minFrequency,
+					max: this.maxFrequency,
+					orientation: 'y',
+					logarithmic: this.logarithmic,
+					titles: function (value) {
+						return (value >= 1000 ? ((value / 1000).toLocaleString() + 'k') : value.toLocaleString()) + 'Hz';
+					}
+				}, this.logarithmic ? {
+					min: this.minFrequency,
+					max: this.maxFrequency,
+					orientation: 'y',
+					logarithmic: this.logarithmic,
+					values: function (value) {
+						var str = value.toString();
+						if (str[0] !== '1') return null;
+						return value;
+					},
+					titles: null,
+					style: {
+						borderLeftStyle: 'solid',
+						pointerEvents: 'none',
+						opacity: '0.08',
+						display: this.logarithmic ? null :'none'
+					}
+				} : null],
+				axes: Array.isArray(this.grid.axes) ? this.grid.axes : (this.grid.axes || this.axes) && [{
+					name: 'Frequency',
+					labels: function (value, i, opt) {
+						var str = value.toString();
+						if (str[0] !== '2' && str[0] !== '1' && str[0] !== '5') return null;
+						return opt.titles[i];
+					}
+				}]
 			});
-		});
+
+			this.on('resize', function () {
+				if (this$1.isPlannedGridUpdate) return;
+				this$1.isPlannedGridUpdate = true;
+				this$1.once('render', function () {
+					this$1.isPlannedGridUpdate = false;
+					this$1.gridComponent.update();
+				});
+			});
+		}
+		else {
+			this.gridComponent.linesContainer.style.display = 'block';
+		}
+	}
+	else if (this.gridComponent) {
+		this.gridComponent.linesContainer.style.display = 'none';
 	}
 
-	this.container.style.color = 'white';
-}
-},{"a-weighting":12,"colormap":24,"flatten":29,"gl-component":34,"inherits":36,"is-browser":38,"mumath/clamp":43,"mumath/lg":45,"plot-grid":52,"xtend/mutable":62}],8:[function(require,module,exports){
+	this.gl.uniform1f(this.minFrequencyLocation, this.minFrequency);
+	this.gl.uniform1f(this.maxFrequencyLocation, this.maxFrequency);
+	this.gl.uniform1f(this.minDecibelsLocation, this.minDecibels);
+	this.gl.uniform1f(this.maxDecibelsLocation, this.maxDecibels);
+	this.gl.uniform1f(this.logarithmicLocation, this.logarithmic ? 1 : 0);
+	this.gl.uniform1f(this.sampleRateLocation, this.sampleRate);
+
+	this.setFill(this.fill, this.inversed);
+};
+},{"a-weighting":12,"color-parse":20,"color-space/hsl":21,"colormap":24,"colormap/colorScales":23,"flatten":29,"gl-component":34,"inherits":36,"is-browser":38,"mumath/clamp":43,"mumath/lg":45,"plot-grid":53,"xtend/mutable":63}],8:[function(require,module,exports){
 module.exports = function a (f) {
 	var f2 = f*f;
 	return 1.2588966 * 148840000 * f2*f2 /
@@ -2990,6 +3137,12 @@ function parse (cstr) {
 
 	//reserved words
 	else if (cstr === 'transparent') alpha = 0;
+
+	//array passed
+	else if (Array.isArray(cstr) || ArrayBuffer.isView(cstr)) {
+		parts = [cstr[0], cstr[1], cstr[2]];
+		alpha = cstr.length === 4 ? cstr[3] : 1;
+	}
 
 	//color space
 	else if (m = /^((?:rgb|hs[lvb]|hwb|cmyk?|xy[zy]|gray|lab|lchu?v?|[ly]uv|lms)a?)\s*\(([^\)]*)\)/.exec(cstr)) {
@@ -4392,7 +4545,7 @@ Component.prototype.createProgram = function (vSrc, fSrc) {
 
 	return program;
 }
-},{"canvas-fit":17,"events":4,"get-canvas-context":32,"inherits":36,"is-browser":38,"mutype/is-object":49,"raf-loop":53,"xtend/mutable":62}],35:[function(require,module,exports){
+},{"canvas-fit":17,"events":4,"get-canvas-context":32,"inherits":36,"is-browser":38,"mutype/is-object":49,"raf-loop":54,"xtend/mutable":63}],35:[function(require,module,exports){
 (function (global){
 if (typeof window !== "undefined") {
     module.exports = window;
@@ -4672,6 +4825,8 @@ module.exports = function(o){
 	return !!o && typeof o === 'object' && o.constructor === Object;
 };
 },{}],50:[function(require,module,exports){
+module.exports=[["#69d2e7","#a7dbd8","#e0e4cc","#f38630","#fa6900"],["#fe4365","#fc9d9a","#f9cdad","#c8c8a9","#83af9b"],["#ecd078","#d95b43","#c02942","#542437","#53777a"],["#556270","#4ecdc4","#c7f464","#ff6b6b","#c44d58"],["#774f38","#e08e79","#f1d4af","#ece5ce","#c5e0dc"],["#e8ddcb","#cdb380","#036564","#033649","#031634"],["#490a3d","#bd1550","#e97f02","#f8ca00","#8a9b0f"],["#594f4f","#547980","#45ada8","#9de0ad","#e5fcc2"],["#00a0b0","#6a4a3c","#cc333f","#eb6841","#edc951"],["#e94e77","#d68189","#c6a49a","#c6e5d9","#f4ead5"],["#3fb8af","#7fc7af","#dad8a7","#ff9e9d","#ff3d7f"],["#d9ceb2","#948c75","#d5ded9","#7a6a53","#99b2b7"],["#ffffff","#cbe86b","#f2e9e1","#1c140d","#cbe86b"],["#efffcd","#dce9be","#555152","#2e2633","#99173c"],["#343838","#005f6b","#008c9e","#00b4cc","#00dffc"],["#413e4a","#73626e","#b38184","#f0b49e","#f7e4be"],["#99b898","#fecea8","#ff847c","#e84a5f","#2a363b"],["#ff4e50","#fc913a","#f9d423","#ede574","#e1f5c4"],["#655643","#80bca3","#f6f7bd","#e6ac27","#bf4d28"],["#351330","#424254","#64908a","#e8caa4","#cc2a41"],["#00a8c6","#40c0cb","#f9f2e7","#aee239","#8fbe00"],["#554236","#f77825","#d3ce3d","#f1efa5","#60b99a"],["#ff9900","#424242","#e9e9e9","#bcbcbc","#3299bb"],["#8c2318","#5e8c6a","#88a65e","#bfb35a","#f2c45a"],["#fad089","#ff9c5b","#f5634a","#ed303c","#3b8183"],["#5d4157","#838689","#a8caba","#cad7b2","#ebe3aa"],["#ff4242","#f4fad2","#d4ee5e","#e1edb9","#f0f2eb"],["#d1e751","#ffffff","#000000","#4dbce9","#26ade4"],["#f8b195","#f67280","#c06c84","#6c5b7b","#355c7d"],["#bcbdac","#cfbe27","#f27435","#f02475","#3b2d38"],["#5e412f","#fcebb6","#78c0a8","#f07818","#f0a830"],["#1b676b","#519548","#88c425","#bef202","#eafde6"],["#eee6ab","#c5bc8e","#696758","#45484b","#36393b"],["#452632","#91204d","#e4844a","#e8bf56","#e2f7ce"],["#f0d8a8","#3d1c00","#86b8b1","#f2d694","#fa2a00"],["#f04155","#ff823a","#f2f26f","#fff7bd","#95cfb7"],["#2a044a","#0b2e59","#0d6759","#7ab317","#a0c55f"],["#bbbb88","#ccc68d","#eedd99","#eec290","#eeaa88"],["#b9d7d9","#668284","#2a2829","#493736","#7b3b3b"],["#67917a","#170409","#b8af03","#ccbf82","#e33258"],["#a3a948","#edb92e","#f85931","#ce1836","#009989"],["#b3cc57","#ecf081","#ffbe40","#ef746f","#ab3e5b"],["#e8d5b7","#0e2430","#fc3a51","#f5b349","#e8d5b9"],["#ab526b","#bca297","#c5ceae","#f0e2a4","#f4ebc3"],["#607848","#789048","#c0d860","#f0f0d8","#604848"],["#aab3ab","#c4cbb7","#ebefc9","#eee0b7","#e8caaf"],["#300030","#480048","#601848","#c04848","#f07241"],["#a8e6ce","#dcedc2","#ffd3b5","#ffaaa6","#ff8c94"],["#3e4147","#fffedf","#dfba69","#5a2e2e","#2a2c31"],["#515151","#ffffff","#00b4ff","#eeeeee"],["#fc354c","#29221f","#13747d","#0abfbc","#fcf7c5"],["#1c2130","#028f76","#b3e099","#ffeaad","#d14334"],["#b6d8c0","#c8d9bf","#dadabd","#ecdbbc","#fedcba"],["#edebe6","#d6e1c7","#94c7b6","#403b33","#d3643b"],["#fdf1cc","#c6d6b8","#987f69","#e3ad40","#fcd036"],["#cc0c39","#e6781e","#c8cf02","#f8fcc1","#1693a7"],["#5c323e","#a82743","#e15e32","#c0d23e","#e5f04c"],["#dad6ca","#1bb0ce","#4f8699","#6a5e72","#563444"],["#230f2b","#f21d41","#ebebbc","#bce3c5","#82b3ae"],["#b9d3b0","#81bda4","#b28774","#f88f79","#f6aa93"],["#3a111c","#574951","#83988e","#bcdea5","#e6f9bc"],["#a7c5bd","#e5ddcb","#eb7b59","#cf4647","#524656"],["#5e3929","#cd8c52","#b7d1a3","#dee8be","#fcf7d3"],["#1c0113","#6b0103","#a30006","#c21a01","#f03c02"],["#8dccad","#988864","#fea6a2","#f9d6ac","#ffe9af"],["#c1b398","#605951","#fbeec2","#61a6ab","#accec0"],["#382f32","#ffeaf2","#fcd9e5","#fbc5d8","#f1396d"],["#e3dfba","#c8d6bf","#93ccc6","#6cbdb5","#1a1f1e"],["#5e9fa3","#dcd1b4","#fab87f","#f87e7b","#b05574"],["#4e395d","#827085","#8ebe94","#ccfc8e","#dc5b3e"],["#000000","#9f111b","#b11623","#292c37","#cccccc"],["#cfffdd","#b4dec1","#5c5863","#a85163","#ff1f4c"],["#9dc9ac","#fffec7","#f56218","#ff9d2e","#919167"],["#413d3d","#040004","#c8ff00","#fa023c","#4b000f"],["#951f2b","#f5f4d7","#e0dfb1","#a5a36c","#535233"],["#1b325f","#9cc4e4","#e9f2f9","#3a89c9","#f26c4f"],["#a8a7a7","#cc527a","#e8175d","#474747","#363636"],["#eff3cd","#b2d5ba","#61ada0","#248f8d","#605063"],["#2d2d29","#215a6d","#3ca2a2","#92c7a3","#dfece6"],["#ffedbf","#f7803c","#f54828","#2e0d23","#f8e4c1"],["#9d7e79","#ccac95","#9a947c","#748b83","#5b756c"],["#f6f6f6","#e8e8e8","#333333","#990100","#b90504"],["#0ca5b0","#4e3f30","#fefeeb","#f8f4e4","#a5b3aa"],["#edf6ee","#d1c089","#b3204d","#412e28","#151101"],["#d1313d","#e5625c","#f9bf76","#8eb2c5","#615375"],["#fffbb7","#a6f6af","#66b6ab","#5b7c8d","#4f2958"],["#4e4d4a","#353432","#94ba65","#2790b0","#2b4e72"],["#f38a8a","#55443d","#a0cab5","#cde9ca","#f1edd0"],["#a70267","#f10c49","#fb6b41","#f6d86b","#339194"],["#fcfef5","#e9ffe1","#cdcfb7","#d6e6c3","#fafbe3"],["#4d3b3b","#de6262","#ffb88c","#ffd0b3","#f5e0d3"],["#c2412d","#d1aa34","#a7a844","#a46583","#5a1e4a"],["#046d8b","#309292","#2fb8ac","#93a42a","#ecbe13"],["#f8edd1","#d88a8a","#474843","#9d9d93","#c5cfc6"],["#9cddc8","#bfd8ad","#ddd9ab","#f7af63","#633d2e"],["#ffefd3","#fffee4","#d0ecea","#9fd6d2","#8b7a5e"],["#30261c","#403831","#36544f","#1f5f61","#0b8185"],["#75616b","#bfcff7","#dce4f7","#f8f3bf","#d34017"],["#a1dbb2","#fee5ad","#faca66","#f7a541","#f45d4c"],["#ff003c","#ff8a00","#fabe28","#88c100","#00c176"],["#fe4365","#fc9d9a","#f9cdad","#c8c8a9","#83af9b"],["#ecd078","#d95b43","#c02942","#542437","#53777a"],["#556270","#4ecdc4","#c7f464","#ff6b6b","#c44d58"],["#774f38","#e08e79","#f1d4af","#ece5ce","#c5e0dc"],["#e8ddcb","#cdb380","#036564","#033649","#031634"],["#490a3d","#bd1550","#e97f02","#f8ca00","#8a9b0f"],["#594f4f","#547980","#45ada8","#9de0ad","#e5fcc2"],["#00a0b0","#6a4a3c","#cc333f","#eb6841","#edc951"],["#e94e77","#d68189","#c6a49a","#c6e5d9","#f4ead5"],["#3fb8af","#7fc7af","#dad8a7","#ff9e9d","#ff3d7f"],["#d9ceb2","#948c75","#d5ded9","#7a6a53","#99b2b7"],["#ffffff","#cbe86b","#f2e9e1","#1c140d","#cbe86b"],["#efffcd","#dce9be","#555152","#2e2633","#99173c"],["#343838","#005f6b","#008c9e","#00b4cc","#00dffc"],["#413e4a","#73626e","#b38184","#f0b49e","#f7e4be"],["#99b898","#fecea8","#ff847c","#e84a5f","#2a363b"],["#ff4e50","#fc913a","#f9d423","#ede574","#e1f5c4"],["#655643","#80bca3","#f6f7bd","#e6ac27","#bf4d28"],["#351330","#424254","#64908a","#e8caa4","#cc2a41"],["#00a8c6","#40c0cb","#f9f2e7","#aee239","#8fbe00"],["#554236","#f77825","#d3ce3d","#f1efa5","#60b99a"],["#ff9900","#424242","#e9e9e9","#bcbcbc","#3299bb"],["#8c2318","#5e8c6a","#88a65e","#bfb35a","#f2c45a"],["#fad089","#ff9c5b","#f5634a","#ed303c","#3b8183"],["#5d4157","#838689","#a8caba","#cad7b2","#ebe3aa"],["#ff4242","#f4fad2","#d4ee5e","#e1edb9","#f0f2eb"],["#d1e751","#ffffff","#000000","#4dbce9","#26ade4"],["#f8b195","#f67280","#c06c84","#6c5b7b","#355c7d"],["#bcbdac","#cfbe27","#f27435","#f02475","#3b2d38"],["#5e412f","#fcebb6","#78c0a8","#f07818","#f0a830"],["#1b676b","#519548","#88c425","#bef202","#eafde6"],["#eee6ab","#c5bc8e","#696758","#45484b","#36393b"],["#452632","#91204d","#e4844a","#e8bf56","#e2f7ce"],["#f0d8a8","#3d1c00","#86b8b1","#f2d694","#fa2a00"],["#f04155","#ff823a","#f2f26f","#fff7bd","#95cfb7"],["#2a044a","#0b2e59","#0d6759","#7ab317","#a0c55f"],["#bbbb88","#ccc68d","#eedd99","#eec290","#eeaa88"],["#b9d7d9","#668284","#2a2829","#493736","#7b3b3b"],["#67917a","#170409","#b8af03","#ccbf82","#e33258"],["#a3a948","#edb92e","#f85931","#ce1836","#009989"],["#b3cc57","#ecf081","#ffbe40","#ef746f","#ab3e5b"],["#e8d5b7","#0e2430","#fc3a51","#f5b349","#e8d5b9"],["#ab526b","#bca297","#c5ceae","#f0e2a4","#f4ebc3"],["#607848","#789048","#c0d860","#f0f0d8","#604848"],["#aab3ab","#c4cbb7","#ebefc9","#eee0b7","#e8caaf"],["#300030","#480048","#601848","#c04848","#f07241"],["#a8e6ce","#dcedc2","#ffd3b5","#ffaaa6","#ff8c94"],["#3e4147","#fffedf","#dfba69","#5a2e2e","#2a2c31"],["#515151","#ffffff","#00b4ff","#eeeeee"],["#fc354c","#29221f","#13747d","#0abfbc","#fcf7c5"],["#1c2130","#028f76","#b3e099","#ffeaad","#d14334"],["#b6d8c0","#c8d9bf","#dadabd","#ecdbbc","#fedcba"],["#edebe6","#d6e1c7","#94c7b6","#403b33","#d3643b"],["#fdf1cc","#c6d6b8","#987f69","#e3ad40","#fcd036"],["#cc0c39","#e6781e","#c8cf02","#f8fcc1","#1693a7"],["#5c323e","#a82743","#e15e32","#c0d23e","#e5f04c"],["#dad6ca","#1bb0ce","#4f8699","#6a5e72","#563444"],["#230f2b","#f21d41","#ebebbc","#bce3c5","#82b3ae"],["#b9d3b0","#81bda4","#b28774","#f88f79","#f6aa93"],["#3a111c","#574951","#83988e","#bcdea5","#e6f9bc"],["#a7c5bd","#e5ddcb","#eb7b59","#cf4647","#524656"],["#5e3929","#cd8c52","#b7d1a3","#dee8be","#fcf7d3"],["#1c0113","#6b0103","#a30006","#c21a01","#f03c02"],["#8dccad","#988864","#fea6a2","#f9d6ac","#ffe9af"],["#c1b398","#605951","#fbeec2","#61a6ab","#accec0"],["#382f32","#ffeaf2","#fcd9e5","#fbc5d8","#f1396d"],["#e3dfba","#c8d6bf","#93ccc6","#6cbdb5","#1a1f1e"],["#5e9fa3","#dcd1b4","#fab87f","#f87e7b","#b05574"],["#4e395d","#827085","#8ebe94","#ccfc8e","#dc5b3e"],["#000000","#9f111b","#b11623","#292c37","#cccccc"],["#cfffdd","#b4dec1","#5c5863","#a85163","#ff1f4c"],["#9dc9ac","#fffec7","#f56218","#ff9d2e","#919167"],["#413d3d","#040004","#c8ff00","#fa023c","#4b000f"],["#951f2b","#f5f4d7","#e0dfb1","#a5a36c","#535233"],["#1b325f","#9cc4e4","#e9f2f9","#3a89c9","#f26c4f"],["#a8a7a7","#cc527a","#e8175d","#474747","#363636"],["#eff3cd","#b2d5ba","#61ada0","#248f8d","#605063"],["#2d2d29","#215a6d","#3ca2a2","#92c7a3","#dfece6"],["#ffedbf","#f7803c","#f54828","#2e0d23","#f8e4c1"],["#9d7e79","#ccac95","#9a947c","#748b83","#5b756c"],["#f6f6f6","#e8e8e8","#333333","#990100","#b90504"],["#0ca5b0","#4e3f30","#fefeeb","#f8f4e4","#a5b3aa"],["#edf6ee","#d1c089","#b3204d","#412e28","#151101"],["#d1313d","#e5625c","#f9bf76","#8eb2c5","#615375"],["#fffbb7","#a6f6af","#66b6ab","#5b7c8d","#4f2958"],["#4e4d4a","#353432","#94ba65","#2790b0","#2b4e72"],["#f38a8a","#55443d","#a0cab5","#cde9ca","#f1edd0"],["#a70267","#f10c49","#fb6b41","#f6d86b","#339194"],["#fcfef5","#e9ffe1","#cdcfb7","#d6e6c3","#fafbe3"],["#4d3b3b","#de6262","#ffb88c","#ffd0b3","#f5e0d3"],["#c2412d","#d1aa34","#a7a844","#a46583","#5a1e4a"],["#046d8b","#309292","#2fb8ac","#93a42a","#ecbe13"],["#f8edd1","#d88a8a","#474843","#9d9d93","#c5cfc6"],["#9cddc8","#bfd8ad","#ddd9ab","#f7af63","#633d2e"],["#ffefd3","#fffee4","#d0ecea","#9fd6d2","#8b7a5e"],["#30261c","#403831","#36544f","#1f5f61","#0b8185"],["#75616b","#bfcff7","#dce4f7","#f8f3bf","#d34017"],["#a1dbb2","#fee5ad","#faca66","#f7a541","#f45d4c"],["#ff003c","#ff8a00","#fabe28","#88c100","#00c176"],["#aaff00","#ffaa00","#ff00aa","#aa00ff","#00aaff"]]
+},{}],51:[function(require,module,exports){
 var trim = require('trim')
   , forEach = require('for-each')
   , isArray = function(arg) {
@@ -4703,7 +4858,7 @@ module.exports = function (headers) {
 
   return result
 }
-},{"for-each":30,"trim":57}],51:[function(require,module,exports){
+},{"for-each":30,"trim":58}],52:[function(require,module,exports){
 (function (process){
 // Generated by CoffeeScript 1.7.1
 (function() {
@@ -4739,7 +4894,7 @@ module.exports = function (headers) {
 }).call(this);
 
 }).call(this,require('_process'))
-},{"_process":6}],52:[function(require,module,exports){
+},{"_process":6}],53:[function(require,module,exports){
 /**
  * @module  plot-grid
  */
@@ -4750,7 +4905,7 @@ var lg = require('mumath/lg');
 var Emitter = require('events').EventEmitter;
 var inherits = require('inherits');
 var sf = 0;
-var className = ((require('insert-css')("._6290cd5b {\r\n\tposition: relative;\r\n}\r\n\r\n._6290cd5b .grid {\r\n\tposition: absolute;\r\n\ttop: 0;\r\n\tleft: 0;\r\n\tbottom: 0;\r\n\tright: 0;\r\n\tpointer-events: none;\r\n}\r\n._6290cd5b .grid-lines {\r\n\tposition: absolute;\r\n\ttop: 0;\r\n\tleft: 0;\r\n\tbottom: 0;\r\n\tright: 0;\r\n\toverflow: hidden;\r\n\tpointer-events: none;\r\n}\r\n\r\n._6290cd5b .grid-line {\r\n\tpointer-events: all;\r\n\tposition: absolute;\r\n\ttop: 0;\r\n\tleft: 0;\r\n\twidth: .5rem;\r\n\theight: .5rem;\r\n\topacity: .135;\r\n}\r\n._6290cd5b .grid-line[hidden] {\r\n\tdisplay: none;\r\n}\r\n._6290cd5b .grid-line:hover {\r\n\topacity: .27;\r\n}\r\n\r\n._6290cd5b .grid-line-x {\r\n\theight: 100%;\r\n\twidth: 0;\r\n\tborder-left: 1px dotted;\r\n\tmargin-left: -1px;\r\n}\r\n._6290cd5b .grid-line-x:after {\r\n\tcontent: '';\r\n\tposition: absolute;\r\n\twidth: .5rem;\r\n\ttop: 0;\r\n\tbottom: 0;\r\n\tleft: -.25rem;\r\n}\r\n._6290cd5b .grid-line-x.grid-line-min {\r\n\tmargin-left: 0px;\r\n}\r\n\r\n._6290cd5b .grid-line-y {\r\n\twidth: 100%;\r\n\theight: 0;\r\n\tmargin-top: -1px;\r\n\tborder-top: 1px dotted;\r\n}\r\n._6290cd5b .grid-line-y:after {\r\n\tcontent: '';\r\n\tposition: absolute;\r\n\theight: .5rem;\r\n\tleft: 0;\r\n\tright: 0;\r\n\ttop: -.25rem;\r\n}\r\n._6290cd5b .grid-line-y.grid-line-max {\r\n\tmargin-top: 0px;\r\n}\r\n\r\n._6290cd5b .grid-axis {\r\n\tposition: absolute;\r\n}\r\n._6290cd5b .grid-axis-x {\r\n\ttop: auto;\r\n\tbottom: 0;\r\n\tright: 0;\r\n\tleft: 0;\r\n\tborder-bottom: 2px solid;\r\n\tmargin-bottom: -.5rem;\r\n}\r\n._6290cd5b .grid-axis-y {\r\n\tborder-left: 2px solid;\r\n\tright: auto;\r\n\ttop: 0;\r\n\tbottom: 0;\r\n\tleft: -1px;\r\n    margin-left: -.5rem;\r\n}\r\n\r\n._6290cd5b .grid-label {\r\n\tposition: absolute;\r\n\ttop: auto;\r\n\tleft: auto;\r\n\tmin-height: 1rem;\r\n\tfont-size: .8rem;\r\n\tfont-family: sans-serif;\r\n\tpointer-events: all;\r\n}\r\n._6290cd5b .grid-label-x {\r\n\tbottom: auto;\r\n\ttop: 100%;\r\n\tmargin-top: 1.5rem;\r\n\twidth: 2rem;\r\n\tmargin-left: -1rem;\r\n\ttext-align: center;\r\n}\r\n._6290cd5b .grid-label-x:before {\r\n\tcontent: '';\r\n\tposition: absolute;\r\n\theight: .5rem;\r\n\twidth: 0;\r\n\tborder-left: 2px solid;\r\n\ttop: -1rem;\r\n\tmargin-left: -1px;\r\n\tmargin-top: -2px;\r\n\tleft: 1rem;\r\n}\r\n\r\n._6290cd5b .grid-label-y {\r\n    right: 100%;\r\n    margin-right: 1.5rem;\r\n    margin-top: -.5rem;\r\n}\r\n._6290cd5b .grid-label-y:before {\r\n\tcontent: '';\r\n\tposition: absolute;\r\n\twidth: .5rem;\r\n\theight: 0;\r\n\tborder-top: 2px solid;\r\n\tright: -1rem;\r\n\ttop: .4rem;\r\n\tmargin-right: -1px;\r\n}\r\n") || true) && "_6290cd5b");
+var className = ((require('insert-css')("._0c534e1f {\r\n\tposition: relative;\r\n}\r\n\r\n._0c534e1f .grid {\r\n\tposition: absolute;\r\n\ttop: 0;\r\n\tleft: 0;\r\n\tbottom: 0;\r\n\tright: 0;\r\n\tpointer-events: none;\r\n}\r\n._0c534e1f .grid-lines {\r\n\tposition: absolute;\r\n\ttop: 0;\r\n\tleft: 0;\r\n\tbottom: 0;\r\n\tright: 0;\r\n\toverflow: hidden;\r\n\tpointer-events: none;\r\n}\r\n\r\n._0c534e1f .grid-line {\r\n\tpointer-events: all;\r\n\tposition: absolute;\r\n\ttop: 0;\r\n\tleft: 0;\r\n\twidth: .5rem;\r\n\theight: .5rem;\r\n\topacity: .15;\r\n}\r\n._0c534e1f .grid-line[hidden] {\r\n\tdisplay: none;\r\n}\r\n._0c534e1f .grid-line:hover {\r\n\topacity: .45;\r\n}\r\n\r\n._0c534e1f .grid-line-x {\r\n\theight: 100%;\r\n\twidth: 0;\r\n\tborder-left: 1px dotted;\r\n\tmargin-left: -1px;\r\n}\r\n._0c534e1f .grid-line-x:after {\r\n\tcontent: '';\r\n\tposition: absolute;\r\n\twidth: .5rem;\r\n\ttop: 0;\r\n\tbottom: 0;\r\n\tleft: -.25rem;\r\n}\r\n._0c534e1f .grid-line-x.grid-line-min {\r\n\tmargin-left: 0px;\r\n}\r\n\r\n._0c534e1f .grid-line-y {\r\n\twidth: 100%;\r\n\theight: 0;\r\n\tmargin-top: -1px;\r\n\tborder-top: 1px dotted;\r\n}\r\n._0c534e1f .grid-line-y:after {\r\n\tcontent: '';\r\n\tposition: absolute;\r\n\theight: .5rem;\r\n\tleft: 0;\r\n\tright: 0;\r\n\ttop: -.25rem;\r\n}\r\n._0c534e1f .grid-line-y.grid-line-max {\r\n\tmargin-top: 0px;\r\n}\r\n\r\n._0c534e1f .grid-axis {\r\n\tposition: absolute;\r\n}\r\n._0c534e1f .grid-axis-x {\r\n\ttop: auto;\r\n\tbottom: 0;\r\n\tright: 0;\r\n\tleft: 0;\r\n\tborder-bottom: 2px solid;\r\n\tmargin-bottom: -.5rem;\r\n}\r\n._0c534e1f .grid-axis-y {\r\n\tborder-left: 2px solid;\r\n\tright: auto;\r\n\ttop: 0;\r\n\tbottom: 0;\r\n\tleft: -1px;\r\n    margin-left: -.5rem;\r\n}\r\n\r\n._0c534e1f .grid-label {\r\n\tposition: absolute;\r\n\ttop: auto;\r\n\tleft: auto;\r\n\tmin-height: 1rem;\r\n\tfont-size: .8rem;\r\n\tfont-family: sans-serif;\r\n\tpointer-events: all;\r\n}\r\n._0c534e1f .grid-label-x {\r\n\tbottom: auto;\r\n\ttop: 100%;\r\n\tmargin-top: 1.5rem;\r\n\twidth: 2rem;\r\n\tmargin-left: -1rem;\r\n\ttext-align: center;\r\n}\r\n._0c534e1f .grid-label-x:before {\r\n\tcontent: '';\r\n\tposition: absolute;\r\n\theight: .5rem;\r\n\twidth: 0;\r\n\tborder-left: 2px solid;\r\n\ttop: -1rem;\r\n\tmargin-left: -1px;\r\n\tmargin-top: -2px;\r\n\tleft: 1rem;\r\n}\r\n\r\n._0c534e1f .grid-label-y {\r\n    right: 100%;\r\n    margin-right: 1.5rem;\r\n    margin-top: -.5rem;\r\n}\r\n._0c534e1f .grid-label-y:before {\r\n\tcontent: '';\r\n\tposition: absolute;\r\n\twidth: .5rem;\r\n\theight: 0;\r\n\tborder-top: 2px solid;\r\n\tright: -1rem;\r\n\ttop: .4rem;\r\n\tmargin-right: -1px;\r\n}\r\n") || true) && "_0c534e1f");
 var closestNumber = require('mumath/closest');
 var mag = require('mumath/order');
 var within = require('mumath/within');
@@ -5057,7 +5212,7 @@ Grid.prototype.update = function (options) {
 
 	return this;
 };
-},{"events":4,"get-uid":33,"inherits":36,"insert-css":37,"is-browser":38,"mumath/closest":44,"mumath/lg":45,"mumath/order":46,"mumath/within":47,"xtend":61}],53:[function(require,module,exports){
+},{"events":4,"get-uid":33,"inherits":36,"insert-css":37,"is-browser":38,"mumath/closest":44,"mumath/lg":45,"mumath/order":46,"mumath/within":47,"xtend":62}],54:[function(require,module,exports){
 var inherits = require('inherits')
 var EventEmitter = require('events').EventEmitter
 var now = require('right-now')
@@ -5102,7 +5257,7 @@ Engine.prototype.tick = function() {
     this.emit('tick', dt)
     this.last = time
 }
-},{"events":4,"inherits":36,"raf":54,"right-now":55}],54:[function(require,module,exports){
+},{"events":4,"inherits":36,"raf":55,"right-now":56}],55:[function(require,module,exports){
 (function (global){
 var now = require('performance-now')
   , root = typeof window === 'undefined' ? global : window
@@ -5178,7 +5333,7 @@ module.exports.polyfill = function() {
 }
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"performance-now":51}],55:[function(require,module,exports){
+},{"performance-now":52}],56:[function(require,module,exports){
 (function (global){
 module.exports =
   global.performance &&
@@ -5189,7 +5344,7 @@ module.exports =
   }
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],56:[function(require,module,exports){
+},{}],57:[function(require,module,exports){
 /**
  * @module audio-demo
  */
@@ -5197,7 +5352,7 @@ var Emitter = require('events').EventEmitter;
 var inherits = require('inherits');
 var extend = require('xtend/mutable');
 var sf = 0;
-var className = ((require('insert-css')("._a3cacb3c {\r\n\tmin-height: 100vh;\r\n\tmargin: 0;\r\n\tfont-family: sans-serif;\r\n\tbox-sizing: border-box;\r\n}\r\n\r\n._a3cacb3c * {\r\n\tbox-sizing: border-box;\r\n}\r\n\r\n._a3cacb3c a {\r\n\tcolor: inherit;\r\n}\r\n\r\n._a3cacb3c [hidden] {\r\n\tdisplay: none!important;\r\n}\r\n\r\n._a3cacb3c:after {\r\n\tcontent: '';\r\n}\r\n._a3cacb3c.dragover:after {\r\n\tcontent: '⎗';\r\n\tposition: absolute;\r\n\ttop: 0;\r\n\tbottom: 0;\r\n\tleft: 0;\r\n\tright: 0;\r\n\tmargin: auto;\r\n\twidth: 20vh;\r\n\theight: 20vh;\r\n\tz-index: 2;\r\n\tfont-size: 20vh;\r\n\ttext-align: center;\r\n\tline-height: 20vh;\r\n\tdisplay: block;\r\n}\r\n\r\n._a3cacb3c.dragover:before {\r\n\tcontent: '';\r\n\tposition: absolute;\r\n\ttop: 0;\r\n\tleft: 0;\r\n\tright: 0;\r\n\tbottom: 0;\r\n\tmargin: 0;\r\n\tborder: .2rem dashed;\r\n\tz-index: 1;\r\n\tdisplay: block;\r\n}\r\n\r\n._a3cacb3c.dragover .source {\r\n}\r\n\r\n._a3cacb3c.dragover .audio-stop,._a3cacb3c.dragover .audio-playback {\r\n\tdisplay: none;\r\n}\r\n\r\n._a3cacb3c .source {\r\n\tmargin: 0;\r\n\tpadding: 0;\r\n\tposition: absolute;\r\n\ttop: .75rem;\r\n\tleft: .75rem;\r\n\tdisplay: block;\r\n\tline-height: 1.5rem;\r\n\tfont-size: .9rem;\r\n\tmax-width: 100%;\r\n\tborder: none;\r\n\tbox-shadow: none;\r\n\toutline: none;\r\n\tfill: currentColor;\r\n\tz-index: 999;\r\n}\r\n._a3cacb3c .source-input {\r\n\tmargin: 0;\r\n\tpadding: 0;\r\n\tborder: 0;\r\n\tdisplay: inline;\r\n\tvertical-align: baseline;\r\n\tline-height: 1rem;\r\n\theight: 1rem;\r\n\tfont-size: .9rem;\r\n\tmax-width: 100%;\r\n\tborder: none;\r\n\tbox-shadow: none;\r\n\tfont-weight: bolder;\r\n\toutline: none;\r\n\tbackground: none;\r\n\t-webkit-appearance: none;\r\n\tappearance: none;\r\n\tborder-radius: 0;\r\n\tbox-shadow: 0 2px;\r\n\tcolor: inherit;\r\n}\r\n._a3cacb3c .source-input:focus{\r\n\toutline: none;\r\n}\r\n._a3cacb3c .source-input-file {\r\n\tposition: absolute;\r\n\ttop: 0;\r\n\tleft: 0;\r\n\tbottom: 0;\r\n\tright: 0;\r\n\topacity: 0;\r\n\tborder: none;\r\n\tcursor: pointer;\r\n}\r\n._a3cacb3c .source-input-url {\r\n\tfont-family: sans-serif;\r\n\tfont-weight: bold;\r\n\tmin-width: 40vw;\r\n}\r\n._a3cacb3c .source-input-url:focus {\r\n}\r\n._a3cacb3c input[type=file],\r\n._a3cacb3c input[type=file]::-webkit-file-upload-button {\r\n\tcursor: pointer;\r\n}\r\n._a3cacb3c i {\r\n\tfill: currentColor;\r\n}\r\n._a3cacb3c .source i {\r\n\twidth: 1.5rem;\r\n\theight: 1.5rem;\r\n\tdisplay: inline-block;\r\n\tposition: relative;\r\n}\r\n._a3cacb3c .source i svg {\r\n\tmargin-bottom: -.52rem;\r\n}\r\n._a3cacb3c i svg {\r\n\tmax-width: 100%;\r\n\tmax-height: 100%;\r\n}\r\n._a3cacb3c .source-link {\r\n\tposition: relative;\r\n\tfont-weight: bold;\r\n\ttext-decoration: none;\r\n\tbox-shadow: 0px 2px;\r\n\twhite-space: nowrap;\r\n\tcursor: pointer;\r\n}\r\n\r\n._a3cacb3c .text-length-limiter {\r\n\tdisplay: inline-block;\r\n\tmax-width: 40vw;\r\n\tvertical-align: top;\r\n\twhite-space: nowrap;\r\n\ttext-overflow: ellipsis;\r\n\toverflow: hidden;\r\n}\r\n._a3cacb3c .source-title {\r\n\tdisplay: inline;\r\n}\r\n\r\n._a3cacb3c .fps {\r\n\tposition: fixed;\r\n\ttop: .75rem;\r\n\tright: .75rem;\r\n\tline-height: 1.5rem;\r\n\tfont-size: .9rem;\r\n\tz-index: 999;\r\n}\r\n\r\n\r\n._a3cacb3c .fps-canvas {\r\n\theight: 1rem;\r\n\twidth: 2rem;\r\n\tdisplay: inline-block;\r\n\tvertical-align: baseline;\r\n\tmargin-right: .15rem;\r\n\tmargin-bottom: -.15rem;\r\n}\r\n\r\n._a3cacb3c .fps-text {\r\n}\r\n\r\n._a3cacb3c .fps-value {\r\n}\r\n\r\n._a3cacb3c .audio-playback {\r\n\r\n}\r\n\r\n._a3cacb3c .progress {\r\n\tposition: fixed;\r\n\ttop: 0;\r\n\tleft: 0;\r\n\theight: .2rem;\r\n\tbackground: currentColor;\r\n\ttransition: .1s linear width;\r\n\tz-index: 999;\r\n}\r\n\r\n@media (max-width: 640px) {\r\n\t._a3cacb3c .text-length-limiter {\r\n\t\tmax-width: 30%;\r\n\t}\r\n\t._a3cacb3c .source {\r\n\t\tright: .75rem;\r\n\t\ttext-align: center;\r\n\t}\r\n\t._a3cacb3c .fps {\r\n\t\ttop: auto;\r\n\t\tbottom: .75rem;\r\n\t\tright: .75rem;\r\n\t\tleft: .75rem;\r\n\t\ttext-align: center;\r\n\t}\r\n}") || true) && "_a3cacb3c");
+var className = ((require('insert-css')("._895ae867 {\r\n\tmin-height: 100vh;\r\n\tmargin: 0;\r\n\tfont-family: sans-serif;\r\n\tbox-sizing: border-box;\r\n}\r\n\r\n._895ae867 * {\r\n\tbox-sizing: border-box;\r\n}\r\n\r\n._895ae867 a {\r\n\tcolor: inherit;\r\n}\r\n\r\n._895ae867 [hidden] {\r\n\tdisplay: none!important;\r\n}\r\n\r\n._895ae867:after {\r\n\tcontent: '';\r\n}\r\n._895ae867.dragover:after {\r\n\tcontent: '⎗';\r\n\tposition: fixed;\r\n\ttop: 0;\r\n\tbottom: 0;\r\n\tleft: 0;\r\n\tright: 0;\r\n\tmargin: auto;\r\n\twidth: 20vh;\r\n\theight: 20vh;\r\n\tz-index: 2;\r\n\tfont-size: 20vh;\r\n\ttext-align: center;\r\n\tline-height: 20vh;\r\n\tdisplay: block;\r\n}\r\n\r\n._895ae867.dragover:before {\r\n\tcontent: '';\r\n\tposition: fixed;\r\n\ttop: 0;\r\n\tleft: 0;\r\n\tright: 0;\r\n\tbottom: 0;\r\n\tmargin: 0;\r\n\tborder: .2rem dashed;\r\n\tz-index: 1;\r\n\tdisplay: block;\r\n}\r\n\r\n._895ae867.dragover .source {\r\n}\r\n\r\n._895ae867.dragover .audio-stop,._895ae867.dragover .audio-playback {\r\n\tdisplay: none;\r\n}\r\n\r\n._895ae867 .source, ._895ae867 .status {\r\n\tmargin: 0;\r\n\tpadding: 0;\r\n\tposition: fixed;\r\n\ttop: .75rem;\r\n\tleft: .75rem;\r\n\tdisplay: block;\r\n\tline-height: 1.5rem;\r\n\tfont-size: .9rem;\r\n\tmax-width: 100%;\r\n\tborder: none;\r\n\tbox-shadow: none;\r\n\toutline: none;\r\n\tfill: currentColor;\r\n\tz-index: 999;\r\n}\r\n._895ae867 .source-input {\r\n\tmargin: 0;\r\n\tpadding: 0;\r\n\tborder: 0;\r\n\tdisplay: inline;\r\n\tvertical-align: baseline;\r\n\tline-height: 1rem;\r\n\theight: 1rem;\r\n\tfont-size: .9rem;\r\n\tmax-width: 100%;\r\n\tborder: none;\r\n\tbox-shadow: none;\r\n\tfont-weight: bolder;\r\n\toutline: none;\r\n\tbackground: none;\r\n\t-webkit-appearance: none;\r\n\tappearance: none;\r\n\tborder-radius: 0;\r\n\tbox-shadow: 0 2px;\r\n\tcolor: inherit;\r\n}\r\n._895ae867 .source-input:focus{\r\n\toutline: none;\r\n}\r\n._895ae867 .source-input-file {\r\n\tposition: fixed;\r\n\ttop: 0;\r\n\tleft: 0;\r\n\tbottom: 0;\r\n\tright: 0;\r\n\topacity: 0;\r\n\tborder: none;\r\n\tcursor: pointer;\r\n}\r\n._895ae867 .source-input-url {\r\n\tfont-family: sans-serif;\r\n\tfont-weight: bold;\r\n\tmin-width: 40vw;\r\n}\r\n._895ae867 .source-input-url:focus {\r\n}\r\n._895ae867 input[type=file],\r\n._895ae867 input[type=file]::-webkit-file-upload-button {\r\n\tcursor: pointer;\r\n}\r\n._895ae867 i {\r\n\tfill: currentColor;\r\n\twidth: 1.5rem;\r\n\theight: 1.5rem;\r\n\tposition: relative;\r\n\tdisplay: inline-block;\r\n\tfont-style: normal;\r\n\tvertical-align: top;\r\n}\r\n._895ae867 .source i {\r\n}\r\n._895ae867 .source i svg {\r\n\tmargin-bottom: -.52rem;\r\n}\r\n._895ae867 i svg {\r\n\tmax-width: 100%;\r\n\tmax-height: 100%;\r\n}\r\n._895ae867 .source-link {\r\n\tposition: relative;\r\n\tfont-weight: bold;\r\n\ttext-decoration: none;\r\n\tbox-shadow: 0px 2px;\r\n\twhite-space: nowrap;\r\n\tcursor: pointer;\r\n}\r\n\r\n._895ae867 .text-length-limiter {\r\n\tdisplay: inline-block;\r\n\tmax-width: 40vw;\r\n\tvertical-align: top;\r\n\twhite-space: nowrap;\r\n\ttext-overflow: ellipsis;\r\n\toverflow: hidden;\r\n}\r\n._895ae867 .source-title {\r\n\tdisplay: inline;\r\n}\r\n\r\n._895ae867 .status {\r\n\tleft: auto;\r\n\tright: .75rem;\r\n}\r\n\r\n._895ae867 .fps {\r\n\tdisplay: inline-block;\r\n}\r\n\r\n\r\n._895ae867 .fps-canvas {\r\n\theight: 1rem;\r\n\twidth: 2rem;\r\n\tdisplay: inline-block;\r\n\tmargin-right: .15rem;\r\n\tmargin-bottom: -.15rem;\r\n}\r\n\r\n._895ae867 .fps-text {\r\n}\r\n\r\n._895ae867 .fps-value {\r\n}\r\n\r\n._895ae867 .params-button {\r\n    position: relative;\r\n    display: inline-block;\r\n    margin-left: .5rem;\r\n}\r\n\r\n\r\n._895ae867 .audio-playback, ._895ae867 .audio-stop {\r\n\tdisplay: inline-block;\r\n}\r\n\r\n._895ae867 .progress {\r\n\tposition: fixed;\r\n\ttop: 0;\r\n\tleft: 0;\r\n\theight: .2rem;\r\n\tbackground: currentColor;\r\n\ttransition: .1s linear width;\r\n\tz-index: 999;\r\n}\r\n\r\n@media (max-width: 42rem) {\r\n\t._895ae867 .text-length-limiter {\r\n\t\tmax-width: 30%;\r\n\t}\r\n\t._895ae867 .source {\r\n\t\tright: .75rem;\r\n\t\ttext-align: center;\r\n\t}\r\n\t._895ae867 .status {\r\n\t\ttop: auto;\r\n\t\tbottom: .75rem;\r\n\t\tright: .75rem;\r\n\t\tleft: .75rem;\r\n\t\ttext-align: center;\r\n\t}\r\n}\r\n\r\n\r\n._895ae867 .params {\r\n\tbackground: linear-gradient(to bottom, rgba(255,255,255,.75), white);\r\n\tposition: fixed;\r\n\tbottom: 0;\r\n\tright: 0;\r\n\tleft: 0;\r\n\tmargin: auto;\r\n\tpadding: .5rem 0 .5rem .75rem;\r\n\tline-height: 1.5;\r\n\tmax-height: 82vh;\r\n\tmax-width: 100%;\r\n\tz-index: 999;\r\n}\r\n._895ae867 .params-close {\r\n\tposition: absolute;\r\n\ttop: 0;\r\n\tright: 0;\r\n\theight: 2rem;\r\n\twidth: 2rem;\r\n\ttext-align: center;\r\n\tline-height: 2rem;\r\n\tfont-size: 1rem;\r\n}\r\n\r\n._895ae867 .param {\r\n\theight: 2rem;\r\n\twidth: 15rem;\r\n\tmargin-right: 2.25rem;\r\n\tfloat: left;\r\n}\r\n\r\n@media (max-width: 42rem) {\r\n\t._895ae867 .params {\r\n\t\tbottom: 2.5rem;\r\n\t\tpadding-right: 2.25rem;\r\n\t}\r\n\t._895ae867 .param {\r\n\t\tmargin-right: 0;\r\n\t\twidth: 100%;\r\n\t\tfloat: none;\r\n\t}\r\n}\r\n\r\n._895ae867 .param-label {\r\n\tfont-size: .75rem;\r\n\tdisplay: inline-block;\r\n\twidth: 33.3%;\r\n\tline-height: 2rem;\r\n\theight: 2rem;\r\n\tvertical-align: top;\r\n\ttext-align: right;\r\n\tpadding-right: 1rem;\r\n}\r\n._895ae867 .param-input {\r\n\twidth: 66.6%;\r\n\theight: 2rem;\r\n\tcolor: inherit;\r\n\tborder: 0;\r\n\tpadding: 0 0;\r\n\tmargin: 0;\r\n\tfont-size: 1rem;\r\n\tbackground: none;\r\n\t/*border-radius: 0;*/\r\n\t/*appearance: none;*/\r\n\t/*-webkit-appearance: none;*/\r\n}\r\n._895ae867 .param-range::-webkit-slider-thumb,\r\n._895ae867 .param-range::-moz-range-thumb {\r\n\twidth: 2rem;\r\n\theight: 2rem;\r\n}\r\n._895ae867 .param-checkbox {\r\n\twidth: 1.5rem;\r\n\theight: 1.5rem;\r\n\tmargin-top: .25rem;\r\n}\r\n@media (max-width: 42rem) {\r\n\t._895ae867 .param-checkbox {\r\n\t\tborder: 1px solid;\r\n\t}\r\n}\r\n\r\n._895ae867 .param-select {\r\n}\r\n\r\n._895ae867 .param-range {\r\n}") || true) && "_895ae867");
 
 var raf = require('raf');
 var now = require('right-now');
@@ -5208,6 +5363,7 @@ var isMobile = require('is-mobile')();
 var xhr = require('xhr');
 var isUrl = require('is-url');
 var ctx = require('audio-context');
+var isPlainObject = require('mutype/is-object');
 
 module.exports = StartApp;
 
@@ -5406,6 +5562,11 @@ function StartApp (opts, cb) {
 	}, 500)
 
 
+	//technical element for fps, params, info etc
+	this.statusEl = document.createElement('div');
+	this.statusEl.classList.add('status');
+	this.container.appendChild(this.statusEl);
+
 	//init fps
 	this.fpsEl = document.createElement('div');
 	this.fpsEl.classList.add('fps');
@@ -5413,7 +5574,7 @@ function StartApp (opts, cb) {
 	this.fpsEl.innerHTML = "\n\t\t<canvas class=\"fps-canvas\"></canvas>\n\t\t<span class=\"fps-text\">\n\t\t\tfps <span class=\"fps-value\">60.0</span>\n\t\t</span>\n\t";
 	this.fpsCanvas = this.fpsEl.querySelector('.fps-canvas');
 	var fpsValue = this.fpsValue = this.fpsEl.querySelector('.fps-value');
-	this.container.appendChild(this.fpsEl);
+	this.statusEl.appendChild(this.fpsEl);
 
 	var w = this.fpsCanvas.width = parseInt(getComputedStyle(this.fpsCanvas).width) || 1;
 	var h = this.fpsCanvas.height = parseInt(getComputedStyle(this.fpsCanvas).height) || 1;
@@ -5426,6 +5587,60 @@ function StartApp (opts, cb) {
 	var updatePeriod = 1000;
 	var maxFPS = 100;
 	var that = this;
+
+
+	//create params template
+	if (isPlainObject(this.params)) {
+		var params = [];
+		for (var name in this.params) {
+			if (!isPlainObject(this$1.params[name])) {
+				this$1.params[name] = {value: this$1.params[name]};
+			}
+			this$1.params[name].name = name;
+			params.push(this$1.params[name]);
+		}
+		this.params = true;
+		this.paramsCollection = params;
+	}
+	else if (Array.isArray(this.params)){
+		this.paramsCollection = this.params;
+		this.params = true;
+	}
+	else {
+		this.paramsCollection = [];
+	}
+	this.paramsEl = document.createElement('div');
+	this.paramsEl.classList.add('params');
+	this.paramsEl.setAttribute('hidden', true);
+	this.paramsEl.innerHTML = "<a class=\"params-close\" href=\"#close-params\"><i class=\"icon-close\">✕</i></a>";
+	this.paramsCollection.forEach(function (opts) { return this$1.addParam(opts); });
+	this.container.appendChild(this.paramsEl);
+
+	//params button
+	this.paramsBtn = document.createElement('a');
+	this.paramsBtn.classList.add('params-button');
+	this.paramsBtn.href = '#params';
+	this.paramsBtn.innerHTML = "<i>" + (this.icons.settings) + "</i>";
+	this.paramsBtn.setAttribute('hidden', true);
+	this.statusEl.appendChild(this.paramsBtn);
+
+	this.paramsBtn.addEventListener('click', function () {
+		if (this$1.paramsEl.hasAttribute('hidden')) {
+			this$1.paramsEl.removeAttribute('hidden');
+		}
+		else {
+			this$1.paramsEl.setAttribute('hidden', true);
+		}
+	});
+	this.paramsEl.querySelector('.params-close').addEventListener('click', function () {
+		if (this$1.paramsEl.hasAttribute('hidden')) {
+			this$1.paramsEl.removeAttribute('hidden');
+		}
+		else {
+			this$1.paramsEl.setAttribute('hidden', true);
+		}
+	});
+
 
 	//enable update routine
 	raf(function measure () {
@@ -5525,11 +5740,15 @@ StartApp.prototype.icons = {
 	play: "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!-- Generated by IcoMoon.io -->\n<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\" \"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd\">\n<svg version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" width=\"819\" height=\"1024\" viewBox=\"0 0 819 1024\">\n<g id=\"icomoon-ignore\">\n</g>\n<path d=\"M236.256 289.447c0-26.093 21.148-47.248 47.241-47.248 8.109 0 13.243 2.118 22.273 5.714l331.371 192.797c15.414 9.136 22.545 23.813 25.295 40.725v4.748c-2.758 16.904-9.891 31.585-25.295 40.725l-331.363 192.789c-9.045 3.604-14.179 5.706-22.273 5.706-26.093 0-47.241-21.155-47.241-47.248v-388.723z\"></path>\n</svg>\n",
 	pause: "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!-- Generated by IcoMoon.io -->\n<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\" \"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd\">\n<svg version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" width=\"819\" height=\"1024\" viewBox=\"0 0 819 1024\">\n<g id=\"icomoon-ignore\">\n</g>\n<path d=\"M186.54 304.268c0-25.055 20.319-45.372 45.387-45.372h95.385c25.055 0 45.387 20.319 45.387 45.372v360.448c0 25.060-20.319 45.38-45.387 45.38h-95.385c-25.055 0-45.387-20.319-45.387-45.38v-360.448z\"></path>\n<path d=\"M446.44 304.268c0-25.055 20.319-45.372 45.359-45.372h95.387c25.055 0 45.364 20.319 45.364 45.372v360.448c0 25.060-20.312 45.38-45.364 45.38h-95.387c-25.050 0-45.364-20.319-45.364-45.38v-360.448z\"></path>\n</svg>\n",
 	stop: "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!-- Generated by IcoMoon.io -->\n<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\" \"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd\">\n<svg version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" width=\"819\" height=\"1024\" viewBox=\"0 0 819 1024\">\n<g id=\"icomoon-ignore\">\n</g>\n<path d=\"M183.954 319.128c0-28.864 23.393-52.253 52.261-52.253h346.679c28.864 0 52.261 23.393 52.261 52.253v346.687c0 28.864-23.393 52.261-52.261 52.261h-346.679c-28.864 0-52.261-23.394-52.261-52.261v-346.687z\"></path>\n</svg>\n",
-	eject: "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!-- Generated by IcoMoon.io -->\n<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\" \"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd\">\n<svg version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" width=\"819\" height=\"1024\" viewBox=\"0 0 819 1024\">\n<g id=\"icomoon-ignore\">\n</g>\n<path d=\"M631.487 257.578l-311.033 199.782c-8.736 5.828-12.814 14.564-12.814 23.879s4.078 18.053 12.814 23.879l311.612 200.361c18.642 12.235 43.68-1.166 43.68-23.879v-400.142c-0.579-22.718-25.050-36.114-44.27-23.879z\"></path>\n<path d=\"M249.975 252.331h-40.772c-31.457 0-57.083 25.629-57.083 57.083v343.648c0 31.457 25.629 57.083 57.083 57.083h40.772c31.457 0 57.083-25.629 57.083-57.083v-343.648c0-31.457-25.629-57.083-57.083-57.083z\"></path>\n</svg>\n"
+	eject: "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!-- Generated by IcoMoon.io -->\n<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\" \"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd\">\n<svg version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" width=\"819\" height=\"1024\" viewBox=\"0 0 819 1024\">\n<g id=\"icomoon-ignore\">\n</g>\n<path d=\"M631.487 257.578l-311.033 199.782c-8.736 5.828-12.814 14.564-12.814 23.879s4.078 18.053 12.814 23.879l311.612 200.361c18.642 12.235 43.68-1.166 43.68-23.879v-400.142c-0.579-22.718-25.050-36.114-44.27-23.879z\"></path>\n<path d=\"M249.975 252.331h-40.772c-31.457 0-57.083 25.629-57.083 57.083v343.648c0 31.457 25.629 57.083 57.083 57.083h40.772c31.457 0 57.083-25.629 57.083-57.083v-343.648c0-31.457-25.629-57.083-57.083-57.083z\"></path>\n</svg>\n",
+	settings: "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!-- Generated by IcoMoon.io -->\n<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\" \"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd\">\n<svg version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" width=\"819\" height=\"1024\" viewBox=\"0 0 819 1024\">\n<g id=\"icomoon-ignore\">\n</g>\n<path d=\"M195.945 202.371h452.727c35.966 0 64.683 28.663 64.683 64.104 0 35.449-28.717 63.734-64.683 63.734h-452.727c-35.587 0-64.683-28.285-64.683-63.734s29.082-64.104 64.683-64.104v0z\"></path>\n<path d=\"M197.089 415.455h452.727c35.587 0 64.683 28.286 64.683 63.726 0 35.449-29.088 64.129-64.683 64.129h-452.727c-35.968 0-64.675-28.67-64.675-64.129 0-35.449 28.705-63.726 64.675-63.726v0z\"></path>\n<path d=\"M196.324 628.158h452.727c35.966 0 64.683 28.663 64.683 64.1 0 35.068-28.717 63.754-64.683 63.754h-452.727c-35.968 0-64.675-28.682-64.675-63.754 0-35.439 28.705-64.1 64.675-64.1v0z\"></path>\n</svg>\n"
 };
 
 //do mobile routines like meta, splashscreen etc
 StartApp.prototype.mobile = true;
+
+//show params button
+StartApp.prototype.params = true;
 
 
 /**
@@ -5629,6 +5848,12 @@ StartApp.prototype.update = function (opts) {
 		this.sourceIcon.setAttribute('hidden', true);
 	}
 
+	if (this.params) {
+		this.paramsBtn.removeAttribute('hidden');
+	} else {
+		this.paramsBtn.setAttribute('hidden', true);
+	}
+
 	return this;
 };
 
@@ -5646,12 +5871,19 @@ StartApp.prototype.setColor = function (color) {
 		var values = parsed.values;
 	}
 	this.colorValues = values;
+
+	var yiq = (values[0] * 299 + values[1] * 587 + values[2] * 114) / (1000);
+	var isDark = yiq < 128;
+
+	var inverseValues = values.map(function (v) { return 255 - v; }).map(function (v) { return v * ( !isDark ? .2 : 1.8); }).map(function (v) { return Math.max(Math.min(v, 255), 0); }).map(function (v) { return !isDark ? v*.2 : 255*.8+v*.2; });
 	this.color = "rgba(" + (values.join(', ')) + ", " + (parsed.alpha) + ")";
-	this.inverseColor = "rgba(" + (values.map(function (v) { return 255 - v; }).join(', ')) + ", " + (parsed.alpha) + ")";
+	this.inverseColor = "rgba(" + (inverseValues.map(function (v) { return v.toFixed(0); }).join(', ')) + ", " + (parsed.alpha) + ")";
 	this.transparentColor = "rgba(" + (values.join(', ')) + ", 0.1)";
 	this.semiTransparentColor = "rgba(" + (values.join(', ')) + ", 0.25)";
 
-	this.styleEl.innerHTML = "\n\t\t." + className + " {\n\t\t\tcolor: " + (this.color) + ";\n\t\t}\n\t\t." + className + " .source-input,\n\t\t." + className + " .source-link\n\t\t{\n\t\t\tbox-shadow: 0 2px " + (this.semiTransparentColor) + ";\n\t\t}\n\t\t." + className + " .source-input:focus,\n\t\t." + className + " .source-link:hover\n\t\t{\n\t\t\tbox-shadow: 0 2px " + (this.color) + ";\n\t\t}\n\n\t\t::selection{\n\t\t\tbackground: " + (this.semiTransparentColor) + ";\n\t\t\tcolor: " + (this.inverseColor) + ";\n\t\t}\n\t\t::-moz-selection{\n\t\t\tbackground: " + (this.semiTransparentColor) + ";\n\t\t\tcolor: " + (this.inverseColor) + ";\n\t\t}\n\n\t\t." + className + " .fps-canvas { background:" + (this.transparentColor) + "; }\n\n\t\t::-moz-placeholder { color:" + (this.semiTransparentColor) + "; }\n\t\tinput:-moz-placeholder { color:" + (this.semiTransparentColor) + "; }\n\t\t:-ms-input-placeholder { color:" + (this.semiTransparentColor) + "; }\n\t\t::-webkit-input-placeholder { color:" + (this.semiTransparentColor) + "; }\n\t";
+	var semiTransparentInverseColor = "rgba(" + (inverseValues.map(function (v) { return v.toFixed(0); }).join(', ')) + ", .75)";
+
+	this.styleEl.innerHTML = "\n\t\t." + className + " {\n\t\t\tcolor: " + (this.color) + ";\n\t\t}\n\t\t." + className + " .source-input,\n\t\t." + className + " .source-link\n\t\t{\n\t\t\tbox-shadow: 0 2px " + (this.semiTransparentColor) + ";\n\t\t}\n\t\t." + className + " .source-input:focus,\n\t\t." + className + " .source-link:hover\n\t\t{\n\t\t\tbox-shadow: 0 2px " + (this.color) + ";\n\t\t}\n\n\t\t." + className + " .params {\n\t\t\tbackground: linear-gradient(to bottom, rgba(" + (inverseValues.map(function (v) { return v.toFixed(0); }).join(', ')) + ", .5), rgba(" + (inverseValues.map(function (v) { return v.toFixed(0); }).join(', ')) + ", .75));\n\t\t}\n\n\t\t." + className + " .params-button {\n\t\t\tcolor: " + (this.color) + "\n\t\t}\n\n\t\t::selection{\n\t\t\tbackground: " + (this.semiTransparentColor) + ";\n\t\t\tcolor: " + (this.inverseColor) + ";\n\t\t}\n\t\t::-moz-selection{\n\t\t\tbackground: " + (this.semiTransparentColor) + ";\n\t\t\tcolor: " + (this.inverseColor) + ";\n\t\t}\n\n\t\t." + className + " .fps-canvas { background:" + (this.transparentColor) + "; }\n\n\t\t::-moz-placeholder { color:" + (this.semiTransparentColor) + "; }\n\t\tinput:-moz-placeholder { color:" + (this.semiTransparentColor) + "; }\n\t\t:-ms-input-placeholder { color:" + (this.semiTransparentColor) + "; }\n\t\t::-webkit-input-placeholder { color:" + (this.semiTransparentColor) + "; }\n\t";
 
 	return this;
 };
@@ -5916,7 +6148,138 @@ StartApp.prototype.reset = function () {
 StartApp.prototype.getTime = function (time) {
 	return pad((time / 60)|0, 2, 0) + ':' + pad((time % 60)|0, 2, 0);
 }
-},{"audio-context":16,"color-parse":20,"color-space/hsl":21,"events":4,"inherits":36,"insert-css":37,"is-mobile":40,"is-url":41,"left-pad":42,"raf":54,"right-now":55,"xhr":58,"xtend/mutable":62}],57:[function(require,module,exports){
+
+
+/** Create param based off options */
+StartApp.prototype.addParam = function (name, opts, cb) {
+	if (isPlainObject(name)) {
+		cb = opts;
+		opts = name;
+		name = opts.name;
+	}
+	if (opts instanceof Function) {
+		cb = opts;
+		opts = {};
+	}
+
+	if (!isPlainObject(opts)) {
+		opts = {value: opts}
+	}
+
+	if (typeof name === 'string') {
+		opts.name = name;
+	}
+
+	var type = opts.type || 'text';
+	cb = cb || opts.change || opts.cb;
+
+	var el = document.createElement('div');
+	el.classList.add('param');
+	var title = opts.name.slice(0,1).toUpperCase() + opts.name.slice(1);
+	var name = opts.name.toLowerCase();
+	name = name.replace(/\s/g, '-');
+	el.innerHTML = "<label for=\"" + name + "\" class=\"param-label\">" + title + "</label>";
+
+	if (!opts.type) {
+		if (opts.values) {
+			opts.type = 'select';
+		}
+		else if (opts.min || opts.max || opts.step || typeof opts.value === 'number') {
+			opts.type = 'range';
+		}
+		else if (typeof opts.value === 'boolean') {
+			opts.type = 'checkbox';
+		}
+	}
+
+	switch (opts.type) {
+		case 'select':
+			opts = extend({
+				values: {},
+				name: 'noname-select'
+			}, opts);
+			var html = "<select\n\t\t\t\tid=\"" + name + "\" class=\"param-input param-select\" title=\"" + (opts.value) + "\">";
+			if (Array.isArray(opts.values)) {
+				for (var i = 0; i < opts.values.length; i++) {
+					html += "<option value=\"" + (opts.values[i]) + "\" " + (opts.values[i] === opts.value ? 'selected' : '') + ">" + (opts.values[i]) + "</option>"
+				}
+			}
+			else {
+				for (var name in opts.values) {
+					html += "<option value=\"" + (opts.values[name]) + "\" " + (opts.values[name] === opts.value ? 'selected' : '') + ">" + name + "</option>"
+				}
+			}
+			html += "</select>";
+
+			el.innerHTML +=	html;
+			break;
+
+		case 'range':
+			opts = extend({
+				min: 0,
+				max: 1,
+				step: 0.01,
+				value: .5,
+				name: 'noname-range'
+			}, opts);
+			el.innerHTML += "<input\n\t\t\t\tid=\"" + (opts.name) + "\" type=\"range\" class=\"param-input param-range\" value=\"" + (opts.value) + "\" min=\"" + (opts.min) + "\" max=\"" + (opts.max) + "\" step=\"" + (opts.step) + "\" title=\"" + (opts.value) + "\"/>\n\t\t\t";
+			break;
+
+
+		case 'checkbox':
+			opts = extend({
+				value: false,
+				name: 'noname-checkbox'
+			}, opts);
+			el.innerHTML += "<input\n\t\t\t\tid=\"" + (opts.name) + "\" type=\"checkbox\" class=\"param-input param-checkbox\" title=\"" + (opts.value) + "\" " + (opts.value ? 'checked' : '') + "/>\n\t\t\t";
+			break;
+
+		case 'number':
+			opts = extend({
+				min: 0,
+				max: 1,
+				step: 0.01,
+				value: .5,
+				name: 'noname-number'
+			}, opts);
+			el.innerHTML += "<input\n\t\t\t\tid=\"" + (opts.name) + "\" type=\"number\" class=\"param-input param-number\" value=\"" + (opts.value) + "\" min=\"" + (opts.min) + "\" max=\"" + (opts.max) + "\" step=\"" + (opts.step) + "\" title=\"" + (opts.value) + "\"/>\n\t\t\t";
+			break;
+
+		default:
+			opts = extend({
+				name: 'noname-text',
+				value: ''
+			}, opts);
+			el.innerHTML += "<input placeholder=\"value...\" id=\"" + (opts.name) + "\" class=\"param-input param-text\" value=\"" + (opts.value) + "\" title=\"" + (opts.value) + "\"/>\n\t\t\t";
+			break;
+
+	}
+
+	opts.element = el;
+
+	var self = this;
+	el.querySelector('input, select').addEventListener('input', change);
+	el.querySelector('input, select').addEventListener('change', change);
+
+	function change () {
+		var v = this.type === 'checkbox' ? this.checked : (this.type === 'number' || this.type === 'range') ? parseFloat(this.value) : this.value;
+		this.title = v;
+		cb && cb.call(self, v, opts);
+		self.emit('change', opts.name, v, opts);
+	};
+
+	this.paramsEl.appendChild(el);
+
+	return el;
+};
+
+//return value of defined param
+StartApp.prototype.getParamValue = function (name) {
+	var el = this.paramsEl.querySelector('#' + name.toLowerCase());
+
+	return el && el.type === 'checkbox' ? el.checked : el && el.value;
+}
+},{"audio-context":16,"color-parse":20,"color-space/hsl":21,"events":4,"inherits":36,"insert-css":37,"is-mobile":40,"is-url":41,"left-pad":42,"mutype/is-object":49,"raf":55,"right-now":56,"xhr":59,"xtend/mutable":63}],58:[function(require,module,exports){
 
 exports = module.exports = trim;
 
@@ -5932,7 +6295,7 @@ exports.right = function(str){
   return str.replace(/\s*$/, '');
 };
 
-},{}],58:[function(require,module,exports){
+},{}],59:[function(require,module,exports){
 "use strict";
 var window = require("global/window")
 var once = require("once")
@@ -6153,7 +6516,7 @@ function _createXHR(options) {
 
 function noop() {}
 
-},{"global/window":59,"is-function":39,"once":60,"parse-headers":50,"xtend":61}],59:[function(require,module,exports){
+},{"global/window":60,"is-function":39,"once":61,"parse-headers":51,"xtend":62}],60:[function(require,module,exports){
 (function (global){
 if (typeof window !== "undefined") {
     module.exports = window;
@@ -6166,7 +6529,7 @@ if (typeof window !== "undefined") {
 }
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],60:[function(require,module,exports){
+},{}],61:[function(require,module,exports){
 module.exports = once
 
 once.proto = once(function () {
@@ -6187,7 +6550,7 @@ function once (fn) {
   }
 }
 
-},{}],61:[function(require,module,exports){
+},{}],62:[function(require,module,exports){
 module.exports = extend
 
 var hasOwnProperty = Object.prototype.hasOwnProperty;
@@ -6210,7 +6573,7 @@ function extend() {
     return target
 }
 
-},{}],62:[function(require,module,exports){
+},{}],63:[function(require,module,exports){
 module.exports = extend
 
 var hasOwnProperty = Object.prototype.hasOwnProperty;
@@ -6231,24 +6594,51 @@ function extend(target) {
     return target
 }
 
-},{}],63:[function(require,module,exports){
+},{}],64:[function(require,module,exports){
 var startApp = require('start-app');
 var Spectrogram = require('./');
 var db = require('decibels');
 var ft = require('fourier-transform');
 var ctx = require('audio-context');
+var colorScales = require('colormap/colorScales');
+var palettes = require('nice-color-palettes/200');
+var colorParse = require('color-parse');
+var flatten = require('flatten');
 
+palettes = palettes
+	.map(function (palette) {
+		return palette.map(function (v) {
+			var parsed = colorParse(v);
+			parsed.values.push(1);
+			return parsed.values;
+		})
+	})
+	.filter(function (palette) {
+		var start = palette[0], end = palette[palette.length - 1];
+		var leftLightness = (start[0] * 299 + start[1] * 587 + start[2] * 114) / (1000);
+		var rightLightness = (end[0] * 299 + end[1] * 587 + end[2] * 114) / (1000);
+		if (Math.abs(leftLightness - rightLightness) < 128) {
+			return false;
+		}
+		return true;
+	});
 
+//playback speed
+var speed = 100;
 
+//pick random palette
+var palette = palettes[(Math.random() * palettes.length)|0];
+
+//analyser
 var source = null;
 var analyser = ctx.createAnalyser();
-analyser.frequencyBinCount = 2048;
+analyser.frequencyBinCount = 4096;
 analyser.smoothingTimeConstant = .1;
 analyser.connect(ctx.destination);
 
 
 //generate input sine
-var N = 2048;
+var N = 4096;
 var sine = Array(N);
 var saw = Array(N);
 var noise = Array(N);
@@ -6269,57 +6659,139 @@ var frequencies = new Float32Array(analyser.frequencyBinCount);
 // frequencies = frequencies.map((v) => db.fromGain(v));
 
 var spectrogram = Spectrogram({
-	smoothing: .2,
-	logarithmic: false,
+	smoothing: .1,
+	fill: palette,
+	// logarithmic: false,
 	// autostart: false
 	// weighting:
 });
 
 
-
 var app = startApp({
-	color: 'white',
-	source: 'https://soundcloud.com/esteban-lara/sets/8daycasts',
-	// params: {
-	// 	weighting: {
-	// 		values: {
-	// 			itu: 'itu',
-	// 			a: 'a',
-	// 			b: 'b',
-	// 			c: 'c',
-	// 			d: 'd',
-	// 			z: 'z'
-	// 		},
-	// 		value: spectrogram.weighting
-	// 	},
-	// 	logarithmic: spectrogram.logarithmic,
-	// 	grid: spectrogram.grid,
-	// 	axes: spectrogram.axes,
-	// 	smoothing: {
-	// 		min: 0,
-	// 		max: 1,
-	// 		step: .01,
-	// 		value: spectrogram.smoothing
-	// 	}
-	// }
-})
-.on('ready', function (node) {
+	color: palette[palette.length - 1],
+	source: 'https://soundcloud.com/xlr8r/sets/xlr8r-top-10-downloads-of-may',
+	params: {
+		fill: {
+			type: 'select',
+			values: (function () {
+				var values = {};
+				for (var name in colorScales) {
+					if (name === 'alpha') continue;
+					if (name === 'hsv') continue;
+					if (name === 'rainbow') continue;
+					if (name === 'rainbow-soft') continue;
+					if (name === 'phase') continue;
+					values[name] = name;
+				}
+				return values;
+			})(),
+			value: 'greys',
+			change: function (value, state) {
+				spectrogram.setFill(value, this.getParamValue('inversed'));
+				this.setColor(spectrogram.color);
+			}
+		},
+		inversed: {
+			value: false,
+			change: function (value) {
+				spectrogram.setFill(this.getParamValue('fill'), value);
+				this.setColor(spectrogram.color);
+			}
+		},
+		weighting: {
+			values: {
+				itu: 'itu',
+				a: 'a',
+				b: 'b',
+				c: 'c',
+				d: 'd',
+				z: 'z'
+			},
+			value: spectrogram.weighting,
+			change: function (v) {
+				spectrogram.weighting = v;
+			}
+		},
+		logarithmic: {
+			value: spectrogram.logarithmic,
+			change: function (v) {
+				spectrogram.logarithmic = v;
+				spectrogram.update();
+			}
+		},
+		grid: {
+			value: spectrogram.grid,
+			change: function (v) {
+				spectrogram.grid = v;
+				spectrogram.update();
+			}
+		},
+		// axes: spectrogram.axes,
+		smoothing: {
+			min: 0,
+			max: 1,
+			step: .01,
+			value: spectrogram.smoothing,
+			change: function (v) {
+				spectrogram.smoothing = v;
+			}
+		},
+		speed: {
+			type: 'range',
+			value: speed,
+			min: 1,
+			//4ms is minimal interval for HTML5 (250 times per second)
+			max: 250,
+			change: function (v) {
+				speed = v;
+			}
+		},
+		minDecibels: {
+			type: 'range',
+			value: spectrogram.minDecibels,
+			min: -100,
+			max: 0,
+			change: function (v) {
+				spectrogram.minDecibels = v;
+				spectrogram.update();
+			}
+		},
+		maxDecibels: {
+			type: 'range',
+			value: spectrogram.maxDecibels,
+			min: -100,
+			max: 0,
+			change: function (v) {
+				spectrogram.maxDecibels = v;
+				spectrogram.update();
+			}
+		}
+	}
+});
+
+
+var pushIntervalId;
+app.on('ready', function (node) {
 	source = node;
 	source.disconnect();
 	source.connect(analyser);
 })
 .on('play', function () {
-	this.pushInterval = setInterval(function () {
-		// for (var i = 0; i < N; i++) {
-		// 	frequencies[i] = Math.sin(10000 * Math.PI * 2 * (i / rate));
-		// }
-		// frequencies = ft(frequencies).map(db.fromGain);
-
-		analyser.getFloatFrequencyData(frequencies);
-		spectrogram.push(frequencies);
-	}, 50);
+	pushChunk();
 })
 .on('pause', function () {
-	clearInterval(this.pushInterval);
-})
-},{"./":7,"audio-context":16,"decibels":26,"fourier-transform":31,"start-app":56}]},{},[63]);
+	clearInterval(pushIntervalId);
+});
+
+function pushChunk () {
+	// for (var i = 0; i < N; i++) {
+	// 	frequencies[i] = Math.sin(10000 * Math.PI * 2 * (i / rate));
+	// }
+	// frequencies = ft(frequencies).map(db.fromGain);
+
+	analyser.getFloatFrequencyData(frequencies);
+	spectrogram.push(frequencies);
+
+	pushIntervalId = setTimeout(pushChunk, 1000 / speed);
+}
+},{"./":7,"audio-context":16,"color-parse":20,"colormap/colorScales":23,"decibels":26,"flatten":29,"fourier-transform":31,"nice-color-palettes/200":50,"start-app":57}]},{},[64]);
