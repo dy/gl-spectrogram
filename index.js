@@ -90,14 +90,28 @@ function Spectrogram (options) {
 			uniform sampler2D texture;
 			uniform sampler2D frequencies;
 			uniform vec4 viewport;
+			uniform float count;
+
+			const float padding = 5.;
 
 			void main () {
-				vec2 coord = vec2((vec2(gl_FragCoord.x + 1., gl_FragCoord.y) - viewport.xy) / viewport.zw);
-				vec3 color = texture2D(texture, coord).xyz;
-				if (gl_FragCoord.x - viewport.x >= viewport.z - 1.) {
-					color = texture2D(frequencies, vec2(coord.y,.5)).www;
+				vec2 one = vec2(1) / viewport.zw;
+				vec2 coord = gl_FragCoord.xy / viewport.zw;
+
+				//do not shift if there is a room for the data
+				if (count < viewport.z - padding) {
+					vec3 color = texture2D(texture, coord).xyz;
+					float mixAmt = step(count, gl_FragCoord.x) * (count + padding - gl_FragCoord.x) / padding;
+					color = mix(color, texture2D(frequencies, vec2(coord.y,.5)).www, mixAmt);
+					gl_FragColor = vec4(color, 1);
 				}
-				gl_FragColor = vec4(vec3(color), 1);
+				else {
+					coord.x += one.x;
+					vec3 color = texture2D(texture, coord).xyz;
+					float mixAmt = step(viewport.z - padding, gl_FragCoord.x);
+					color = mix(color, texture2D(frequencies, vec2(coord.y,.5)).www, mixAmt);
+					gl_FragColor = vec4(color, 1);
+				}
 			}
 		`,
 		phase: 0,
@@ -129,6 +143,10 @@ function Spectrogram (options) {
 		float: this.float,
 		antialias: this.antialias
 	});
+
+	//hook up counter
+	this.shiftComponent.count = 0;
+	this.shiftComponent.countLocation = gl.getUniformLocation(this.shiftComponent.program, 'count');
 
 	//preset initial freqs
 	this.push(this.frequencies);
@@ -187,7 +205,6 @@ Spectrogram.prototype.frag = `
 		float intensity = texture2D(texture, vec2(coord.x, f(coord.y))).x;
 		intensity = (intensity * 100. - minDecibels - 100.) / (maxDecibels - minDecibels);
 		gl_FragColor = vec4(vec3(texture2D(colormap, vec2(intensity, coord.y) )), 1);
-		// gl_FragColor = vec4(vec3(intensity), 1);
 	}
 `;
 
@@ -256,6 +273,10 @@ Spectrogram.prototype.push = function (frequencies) {
 	magnitudes = magnitudes.map((value) => clamp(255 * (1 + value / 100), 0, 255));
 
 	this.shiftComponent.setTexture('frequencies', magnitudes);
+
+	//update count
+	this.shiftComponent.count++;
+	gl.uniform1f(this.shiftComponent.countLocation, this.shiftComponent.count);
 
 	//do shift
 	this.shiftComponent.render();
