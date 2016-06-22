@@ -15,9 +15,12 @@ Spectrogram.prototype.autostart = false;
 Spectrogram.prototype.init = function () {
 	var ctx = this.context;
 
+	this.count = 0;
+
 	//render only on pushes
 	this.on('push', (magnitudes) => {
 		this.render(magnitudes);
+		this.count++;
 	});
 
 	//on color update
@@ -68,10 +71,17 @@ Spectrogram.prototype.draw = function (data) {
 		return;
 	}
 
-	//displace canvas
-	var imgData = ctx.getImageData(this.viewport[0], this.viewport[1], width, height);
-	ctx.putImageData(imgData, this.viewport[0]-1, this.viewport[1]);
+	var padding = 5;
 
+	if (this.count < this.viewport[1] + width - padding) {
+		var offset = this.count;
+	}
+	else {
+		//displace canvas
+		var imgData = ctx.getImageData(this.viewport[0], this.viewport[1], width, height);
+		ctx.putImageData(imgData, this.viewport[0]-1, this.viewport[1]);
+		var offset = this.viewport[0] + width - padding - 1;
+	}
 
 	//put new slice
 	for (var i = 0; i < height; i++) {
@@ -79,6 +89,6 @@ Spectrogram.prototype.draw = function (data) {
 		var amt = data[(this.f(ratio) * data.length)|0] / 255;
 		amt = clamp((amt * 100. - 100 - this.minDecibels) / (this.maxDecibels - this.minDecibels), 0, 1);
 		ctx.fillStyle = this.getColor(amt);
-		ctx.fillRect(this.viewport[0] + width - 1, this.viewport[1] + height - i, 1, 1);
+		ctx.fillRect(offset, this.viewport[1] + height - i, 1, 1);
 	}
 }

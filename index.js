@@ -29,7 +29,7 @@ Spectrogram.prototype.init = function () {
 	this.logarithmicLocation = gl.getUniformLocation(this.program, 'logarithmic');
 	this.sampleRateLocation = gl.getUniformLocation(this.program, 'sampleRate');
 
-	var size = [1024, 512];
+	var size = this.size;
 
 	this.shiftComponent = Component({
 		context: gl,
@@ -153,6 +153,9 @@ Spectrogram.prototype.init = function () {
 		gl.uniform1f(this.sampleRateLocation, this.sampleRate);
 	});
 };
+
+//background texture size
+Spectrogram.prototype.size = [1024, 1024];
 
 //default renderer just outputs active texture
 Spectrogram.prototype.frag = `

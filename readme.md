@@ -11,6 +11,9 @@ Render spectrogram in webgl or 2d.
 ```js
 var createSpectrogram = require('gl-spectrogram');
 
+//lightweight 2d-canvas version
+//var createSpectrogram = require('gl-spectrogram/2d');
+
 var spectrogram = createSpectrogram({
 	//placement settings
 	container: document.body,
@@ -33,7 +36,10 @@ var spectrogram = createSpectrogram({
 	//rendering settings
 	smoothing: 0.5,
 	fill: 'inferno',
-	background: null
+	background: null,
+
+	//useful only for webgl renderer, defines the size of data texture
+	size: [1024, 1024]
 });
 
 //push frequencies data, view is shifted for 1 slice
