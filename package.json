@@ -1,6 +1,6 @@
 {
   "name": "gl-spectrogram",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Draw spectrogram with webgl",
   "main": "index.js",
   "scripts": {
