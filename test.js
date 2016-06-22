@@ -7,6 +7,8 @@ var colorScales = require('colormap/colorScales');
 var palettes = require('nice-color-palettes/200');
 var colorParse = require('color-parse');
 var flatten = require('flatten');
+var isMobile = require('is-mobile');
+
 
 palettes = palettes
 	.map((palette) => {
@@ -64,6 +66,8 @@ var frequencies = new Float32Array(analyser.frequencyBinCount);
 var spectrogram = Spectrogram({
 	smoothing: .1,
 	fill: palette,
+	maxDecibels: 0,
+	minDecibels: -50
 	// logarithmic: false,
 	// autostart: false
 	// weighting:
@@ -71,8 +75,10 @@ var spectrogram = Spectrogram({
 
 
 var app = startApp({
+	github: 'audio-lab/gl-spectrogram',
 	color: palette[palette.length - 1],
-	source: 'https://soundcloud.com/xlr8r/sets/xlr8r-top-10-downloads-of-may',
+	// source: 'https://soundcloud.com/xlr8r/sets/xlr8r-top-10-downloads-of-may',
+	source: isMobile ? './sample.mp3' : 'https://soundcloud.com/sincopat/alberto-sola-sincopat-podcast-157',
 	params: {
 		fill: {
 			type: 'select',
@@ -174,9 +180,8 @@ var app = startApp({
 
 
 var pushIntervalId;
-app.on('ready', function (node) {
+app.on('source', function (node) {
 	source = node;
-	source.disconnect();
 	source.connect(analyser);
 })
 .on('play', function () {
