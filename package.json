@@ -1,7 +1,7 @@
 {
   "name": "gl-spectrogram",
   "version": "1.0.3",
-  "description": "Draw spectrogram with webgl",
+  "description": "Draw spectrogram with webgl or 2d-canvas",
   "main": "index.js",
   "scripts": {
     "test": "budo test.js",
@@ -20,6 +20,7 @@
   "keywords": [
     "audio",
     "vis",
+    "canvas2d",
     "webgl"
   ],
   "author": "ΔY <dfcreative@gmail.com>",
