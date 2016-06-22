@@ -2376,7 +2376,106 @@ process.umask = function() { return 0; };
 
 },{}],7:[function(require,module,exports){
 /**
- * @module  gl-spectrogram
+ * Lightweight canvas version of a spectrogram.
+ * @module gl-spectrogram/2d
+ */
+
+var Spectrogram = require('./lib/core');
+var parseColor = require('color-parse');
+var clamp = require('mumath/clamp');
+
+module.exports = Spectrogram;
+
+Spectrogram.prototype.context = '2d';
+Spectrogram.prototype.autostart = false;
+
+Spectrogram.prototype.init = function () {
+	var this$1 = this;
+
+	var ctx = this.context;
+
+	this.count = 0;
+
+	//render only on pushes
+	this.on('push', function (magnitudes) {
+		this$1.render(magnitudes);
+		this$1.count++;
+	});
+
+	//on color update
+	this.on('update', function () {
+		this$1.colorValues = parseColor(this$1.color).values;
+		this$1.bgValues = parseColor(this$1.canvas.style.background).values;
+	});
+};
+
+
+//get mapped frequency
+function lg (x) {
+	return Math.log(x) / Math.log(10);
+}
+
+Spectrogram.prototype.f = function (ratio) {
+	var halfRate = this.sampleRate * .5;
+	if (this.logarithmic) {
+		var logF = Math.pow(10., Math.log10(this.minFrequency) + ratio * (Math.log10(this.maxFrequency) - Math.log10(this.minFrequency)) );
+		ratio = (logF - this.minFrequency) / (this.maxFrequency - this.minFrequency);
+	}
+
+	var leftF = this.minFrequency / halfRate;
+	var rightF = this.maxFrequency / halfRate;
+
+	ratio = leftF + ratio * (rightF - leftF);
+
+	return ratio;
+}
+
+//return color based on current palette
+Spectrogram.prototype.getColor = function (ratio) {
+	var cm = this.colormap;
+	var idx = ratio*cm.length*.25;
+	var left = cm.slice(Math.floor(idx)*4, Math.floor(idx)*4 + 4);
+	var right = cm.slice(Math.ceil(idx)*4, Math.ceil(idx)*4 + 4);
+	var amt = idx % 1;
+	var values = left.map(function (v,i) { return (v * (1 - amt) + right[i] * amt)|0; } );
+	return ("rgba(" + (values.join(',')) + ")");
+}
+
+Spectrogram.prototype.draw = function (data) {
+	var this$1 = this;
+
+	var ctx = this.context;
+	var width = this.viewport[2],
+		height = this.viewport[3];
+
+	if (!this.bgValues) {
+		return;
+	}
+
+	var padding = 5;
+
+	if (this.count < this.viewport[1] + width - padding) {
+		var offset = this.count;
+	}
+	else {
+		//displace canvas
+		var imgData = ctx.getImageData(this.viewport[0], this.viewport[1], width, height);
+		ctx.putImageData(imgData, this.viewport[0]-1, this.viewport[1]);
+		var offset = this.viewport[0] + width - padding - 1;
+	}
+
+	//put new slice
+	for (var i = 0; i < height; i++) {
+		var ratio = i / height;
+		var amt = data[(this$1.f(ratio) * data.length)|0] / 255;
+		amt = clamp((amt * 100. - 100 - this$1.minDecibels) / (this$1.maxDecibels - this$1.minDecibels), 0, 1);
+		ctx.fillStyle = this$1.getColor(amt);
+		ctx.fillRect(offset, this$1.viewport[1] + height - i, 1, 1);
+	}
+}
+},{"./lib/core":8,"color-parse":23,"mumath/clamp":48}],8:[function(require,module,exports){
+/**
+ * @module  gl-spectrogram/lib/core
  */
 
 
@@ -2410,91 +2509,7 @@ function Spectrogram (options) {
 
 	if (isBrowser) this.container.classList.add('gl-spectrogram');
 
-	//preset colormap texture
-	this.setTexture('colormap', {
-		unit: 3,
-		type: gl.UNSIGNED_BYTE,
-		filter: gl.LINEAR,
-		wrap: gl.CLAMP_TO_EDGE,
-	});
-
-	//save texture location
-	this.textureLocation = gl.getUniformLocation(this.program, 'texture');
-	this.maxFrequencyLocation = gl.getUniformLocation(this.program, 'maxFrequency');
-	this.minFrequencyLocation = gl.getUniformLocation(this.program, 'minFrequency');
-	this.maxDecibelsLocation = gl.getUniformLocation(this.program, 'maxDecibels');
-	this.minDecibelsLocation = gl.getUniformLocation(this.program, 'minDecibels');
-	this.logarithmicLocation = gl.getUniformLocation(this.program, 'logarithmic');
-	this.sampleRateLocation = gl.getUniformLocation(this.program, 'sampleRate');
-
-	var size = [1024, 512];
-
-	this.shiftComponent = Component({
-		context: gl,
-		textures: {
-			texture: {
-				unit: 0,
-				data: null,
-				format: gl.RGBA,
-				type: gl.UNSIGNED_BYTE,
-				filter: gl.LINEAR,
-				wrap: gl.CLAMP_TO_EDGE,
-				width: size[0],
-				height: size[1]
-			},
-			altTexture: {
-				unit: 1,
-				data: null,
-				format: gl.RGBA,
-				type: gl.UNSIGNED_BYTE,
-				filter: gl.LINEAR,
-				wrap: gl.CLAMP_TO_EDGE,
-				width: size[0],
-				height: size[1]
-			},
-			frequencies: {
-				unit: 2,
-				data: null,
-				format: gl.ALPHA,
-				type: gl.UNSIGNED_BYTE,
-				filter: gl.NEAREST,
-				wrap: gl.CLAMP_TO_EDGE
-			}
-		},
-		frag: "\n\t\t\tprecision highp float;\n\n\t\t\tuniform sampler2D texture;\n\t\t\tuniform sampler2D frequencies;\n\t\t\tuniform vec4 viewport;\n\t\t\tuniform float count;\n\n\t\t\tconst float padding = 5.;\n\n\t\t\tvoid main () {\n\t\t\t\tvec2 one = vec2(1) / viewport.zw;\n\t\t\t\tvec2 coord = gl_FragCoord.xy / viewport.zw;\n\n\t\t\t\t//do not shift if there is a room for the data\n\t\t\t\tif (count < viewport.z - padding) {\n\t\t\t\t\tvec3 color = texture2D(texture, coord).xyz;\n\t\t\t\t\tfloat mixAmt = step(count, gl_FragCoord.x);\n\t\t\t\t\tcolor = mix(color, texture2D(frequencies, vec2(coord.y,.5)).www, mixAmt);\n\t\t\t\t\tmixAmt *= (- count - padding + gl_FragCoord.x) / padding;\n\t\t\t\t\tcolor = mix(color, vec3(0), mixAmt);\n\t\t\t\t\tgl_FragColor = vec4(color, 1);\n\t\t\t\t}\n\t\t\t\telse {\n\t\t\t\t\tcoord.x += one.x;\n\t\t\t\t\tvec3 color = texture2D(texture, coord).xyz;\n\t\t\t\t\tfloat mixAmt = step(viewport.z - padding, gl_FragCoord.x);\n\t\t\t\t\tcolor = mix(color, texture2D(frequencies, vec2(coord.y,.5)).www, mixAmt);\n\t\t\t\t\tmixAmt *= (- viewport.z + gl_FragCoord.x) / padding;\n\t\t\t\t\tcolor = mix(color, vec3(0), mixAmt);\n\t\t\t\t\tgl_FragColor = vec4(color, 1);\n\t\t\t\t}\n\t\t\t}\n\t\t",
-		phase: 0,
-		spectrogram: this,
-		framebuffer: gl.createFramebuffer(),
-		render: function () {
-			var gl = this.gl;
-
-			gl.useProgram(this.program);
-
-			//TODO: throttle rendering here
-			gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
-			gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.textures[this.phase ? 'texture' : 'altTexture'].texture, 0);
-			gl.uniform1i(this.textures.texture.location, this.phase);
-
-			this.phase = (this.phase + 1) % 2;
-
-			//vp is unbound from canvas, so we have to manually set it
-			gl.uniform4fv(gl.getUniformLocation(this.program, 'viewport'), [0,0,size[0], size[1]]);
-			gl.viewport(0,0,size[0],size[1]);
-			this.draw(this);
-
-			gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-
-			gl.useProgram(this.spectrogram.program);
-			gl.uniform1i(this.spectrogram.textureLocation, this.phase);
-		},
-		autostart: false,
-		float: this.float,
-		antialias: this.antialias
-	});
-
-	//hook up counter
-	this.shiftComponent.count = 0;
-	this.shiftComponent.countLocation = gl.getUniformLocation(this.shiftComponent.program, 'count');
+	this.init();
 
 	//preset initial freqs
 	this.push(this.frequencies);
@@ -2506,8 +2521,7 @@ function Spectrogram (options) {
 inherits(Spectrogram, Component);
 
 
-//default renderer just outputs active texture
-Spectrogram.prototype.frag = "\n\tprecision highp float;\n\n\tuniform sampler2D texture;\n\tuniform sampler2D colormap;\n\tuniform vec4 viewport;\n\tuniform float sampleRate;\n\tuniform float maxFrequency;\n\tuniform float minFrequency;\n\tuniform float maxDecibels;\n\tuniform float minDecibels;\n\tuniform float logarithmic;\n\n\n\tconst float log10 = " + (Math.log(10)) + ";\n\n\tfloat lg (float x) {\n\t\treturn log(x) / log10;\n\t}\n\n\t//return a or b based on weight\n\tfloat decide (float a, float b, float w) {\n\t\treturn step(0.5, w) * b + step(w, 0.5) * a;\n\t}\n\n\t//get mapped frequency\n\tfloat f (float ratio) {\n\t\tfloat halfRate = sampleRate * .5;\n\n\t\tfloat logF = pow(10., lg(minFrequency) + ratio * (lg(maxFrequency) - lg(minFrequency)) );\n\n\t\tratio = decide(ratio, (logF - minFrequency) / (maxFrequency - minFrequency), logarithmic);\n\n\t\tfloat leftF = minFrequency / halfRate;\n\t\tfloat rightF = maxFrequency / halfRate;\n\n\t\tratio = leftF + ratio * (rightF - leftF);\n\n\t\treturn ratio;\n\t}\n\n\tvoid main () {\n\t\tvec2 coord = (gl_FragCoord.xy - viewport.xy) / viewport.zw;\n\t\tfloat intensity = texture2D(texture, vec2(coord.x, f(coord.y))).x;\n\t\tintensity = (intensity * 100. - minDecibels - 100.) / (maxDecibels - minDecibels);\n\t\tgl_FragColor = vec4(vec3(texture2D(colormap, vec2(intensity, coord.y) )), 1);\n\t}\n";
+Spectrogram.prototype.init = function () {};
 
 Spectrogram.prototype.antialias = false;
 Spectrogram.prototype.premultipliedAlpha = true;
@@ -2573,14 +2587,7 @@ Spectrogram.prototype.push = function (frequencies) {
 	//map mags to 0..255 range limiting by db subrange
 	magnitudes = magnitudes.map(function (value) { return clamp(255 * (1 + value / 100), 0, 255); });
 
-	this.shiftComponent.setTexture('frequencies', magnitudes);
-
-	//update count
-	this.shiftComponent.count++;
-	gl.uniform1f(this.shiftComponent.countLocation, this.shiftComponent.count);
-
-	//do shift
-	this.shiftComponent.render();
+	this.emit('push', magnitudes);
 
 	return this;
 };
@@ -2660,6 +2667,8 @@ Spectrogram.prototype.setFill = function (cm, inverse) {
 
 	var mainColor = cm.slice(-4);
 	this.color = "rgba(" + mainColor + ")";
+
+	this.colormap = cm;
 
 	//set grid color to colormap’s color
 	if (this.gridComponent) {
@@ -2760,34 +2769,29 @@ Spectrogram.prototype.update = function () {
 		this.gridComponent.linesContainer.style.display = 'none';
 	}
 
-	this.gl.uniform1f(this.minFrequencyLocation, this.minFrequency);
-	this.gl.uniform1f(this.maxFrequencyLocation, this.maxFrequency);
-	this.gl.uniform1f(this.minDecibelsLocation, this.minDecibels);
-	this.gl.uniform1f(this.maxDecibelsLocation, this.maxDecibels);
-	this.gl.uniform1f(this.logarithmicLocation, this.logarithmic ? 1 : 0);
-	this.gl.uniform1f(this.sampleRateLocation, this.sampleRate);
-
 	this.setFill(this.fill, this.inversed);
+
+	this.emit('update');
 };
-},{"a-weighting":12,"color-parse":22,"color-space/hsl":23,"colormap":26,"colormap/colorScales":25,"flatten":31,"gl-component":37,"inherits":39,"is-browser":41,"mumath/clamp":47,"mumath/lg":49,"plot-grid":58,"xtend/mutable":78}],8:[function(require,module,exports){
+},{"a-weighting":13,"color-parse":23,"color-space/hsl":24,"colormap":27,"colormap/colorScales":26,"flatten":32,"gl-component":38,"inherits":40,"is-browser":42,"mumath/clamp":48,"mumath/lg":50,"plot-grid":59,"xtend/mutable":79}],9:[function(require,module,exports){
 module.exports = function a (f) {
 	var f2 = f*f;
 	return 1.2588966 * 148840000 * f2*f2 /
 	((f2 + 424.36) * Math.sqrt((f2 + 11599.29) * (f2 + 544496.41)) * (f2 + 148840000));
 };
-},{}],9:[function(require,module,exports){
+},{}],10:[function(require,module,exports){
 module.exports = function b (f) {
 	var f2 = f*f;
 	return 1.019764760044717 * 148840000 * f*f2 /
 	((f2 + 424.36) * Math.sqrt(f2 + 25122.25) * (f2 + 148840000));
 };
-},{}],10:[function(require,module,exports){
+},{}],11:[function(require,module,exports){
 module.exports = function c (f) {
 	var f2 = f*f;
 	return 1.0069316688518042 * 148840000 * f2 /
 	((f2 + 424.36) * (f2 + 148840000));
 };
-},{}],11:[function(require,module,exports){
+},{}],12:[function(require,module,exports){
 module.exports = function d (f) {
 	var f2 = f*f;
 	return (f / 6.8966888496476e-5) * Math.sqrt(
@@ -2797,7 +2801,7 @@ module.exports = function d (f) {
 		) /	((f2 + 79919.29) * (f2 + 1345600))
 	);
 };
-},{}],12:[function(require,module,exports){
+},{}],13:[function(require,module,exports){
 /**
  * @module  noise-weighting
  */
@@ -2810,7 +2814,7 @@ module.exports = {
 	itu: require('./itu'),
 	z: require('./z')
 };
-},{"./a":8,"./b":9,"./c":10,"./d":11,"./itu":13,"./z":14}],13:[function(require,module,exports){
+},{"./a":9,"./b":10,"./c":11,"./d":12,"./itu":14,"./z":15}],14:[function(require,module,exports){
 module.exports = function itu (f) {
 	var f2 = f*f;
 
@@ -2819,11 +2823,11 @@ module.exports = function itu (f) {
 
 	return 8.128305161640991 * 1.246332637532143e-4 * f / Math.sqrt(h1*h1 + h2*h2);
 };
-},{}],14:[function(require,module,exports){
+},{}],15:[function(require,module,exports){
 module.exports = function (f) {
 	return 1;
 };
-},{}],15:[function(require,module,exports){
+},{}],16:[function(require,module,exports){
 'use strict';
 
 var arraytools  = function () {
@@ -3012,13 +3016,13 @@ var arraytools  = function () {
 
 module.exports = arraytools();
 
-},{}],16:[function(require,module,exports){
+},{}],17:[function(require,module,exports){
 var window = require('global/window');
 
 var Context = window.AudioContext || window.webkitAudioContext;
 if (Context) module.exports = new Context;
 
-},{"global/window":38}],17:[function(require,module,exports){
+},{"global/window":39}],18:[function(require,module,exports){
 // sourced from:
 // http://www.leanbackplayer.com/test/h5mt.html
 // https://github.com/broofa/node-mime/blob/master/types.json
@@ -3040,7 +3044,7 @@ module.exports = function lookup (ext) {
   return mimeLookup[ext.toLowerCase()]
 }
 
-},{"./mime-types":18}],18:[function(require,module,exports){
+},{"./mime-types":19}],19:[function(require,module,exports){
 module.exports = {
   "audio/midi": ["mid", "midi", "kar", "rmi"],
   "audio/mp4": ["mp4a", "m4a"],
@@ -3064,7 +3068,7 @@ module.exports = {
   "video/x-matroska": ["mkv", "mk3d", "mks"]
 };
 
-},{}],19:[function(require,module,exports){
+},{}],20:[function(require,module,exports){
 var size = require('element-size')
 
 module.exports = fit
@@ -3114,7 +3118,7 @@ function fit(canvas, parent, scale) {
   }
 }
 
-},{"element-size":30}],20:[function(require,module,exports){
+},{"element-size":31}],21:[function(require,module,exports){
 (function (Buffer){
 var clone = (function() {
 'use strict';
@@ -3278,7 +3282,7 @@ if (typeof module === 'object' && module.exports) {
 }
 
 }).call(this,require("buffer").Buffer)
-},{"buffer":2}],21:[function(require,module,exports){
+},{"buffer":2}],22:[function(require,module,exports){
 module.exports = {
 	"aliceblue": [240, 248, 255],
 	"antiquewhite": [250, 235, 215],
@@ -3429,7 +3433,7 @@ module.exports = {
 	"yellow": [255, 255, 0],
 	"yellowgreen": [154, 205, 50]
 };
-},{}],22:[function(require,module,exports){
+},{}],23:[function(require,module,exports){
 /**
  * @module color-parse
  */
@@ -3558,7 +3562,7 @@ function parse (cstr) {
 		alpha: alpha
 	};
 }
-},{"color-name":21}],23:[function(require,module,exports){
+},{"color-name":22}],24:[function(require,module,exports){
 /**
  * @module color-space/hsl
  */
@@ -3665,7 +3669,7 @@ rgb.hsl = function(rgb) {
 
 	return [h, s * 100, l * 100];
 };
-},{"./rgb":24}],24:[function(require,module,exports){
+},{"./rgb":25}],25:[function(require,module,exports){
 /**
  * RGB space.
  *
@@ -3679,7 +3683,7 @@ module.exports = {
 	channel: ['red', 'green', 'blue'],
 	alias: ['RGB']
 };
-},{}],25:[function(require,module,exports){
+},{}],26:[function(require,module,exports){
 module.exports={
 	"jet":[{"index":0,"rgb":[0,0,131]},{"index":0.125,"rgb":[0,60,170]},{"index":0.375,"rgb":[5,255,255]},{"index":0.625,"rgb":[255,255,0]},{"index":0.875,"rgb":[250,0,0]},{"index":1,"rgb":[128,0,0]}],
 
@@ -3772,7 +3776,7 @@ module.exports={
 	"cubehelix": [{"index":0,"rgb":[0,0,0]},{"index":0.07,"rgb":[22,5,59]},{"index":0.13,"rgb":[60,4,105]},{"index":0.2,"rgb":[109,1,135]},{"index":0.27,"rgb":[161,0,147]},{"index":0.33,"rgb":[210,2,142]},{"index":0.4,"rgb":[251,11,123]},{"index":0.47,"rgb":[255,29,97]},{"index":0.53,"rgb":[255,54,69]},{"index":0.6,"rgb":[255,85,46]},{"index":0.67,"rgb":[255,120,34]},{"index":0.73,"rgb":[255,157,37]},{"index":0.8,"rgb":[241,191,57]},{"index":0.87,"rgb":[224,220,93]},{"index":0.93,"rgb":[218,241,142]},{"index":1,"rgb":[227,253,198]}]
 };
 
-},{}],26:[function(require,module,exports){
+},{}],27:[function(require,module,exports){
 /*
  * Ben Postlethwaite
  * January 2013
@@ -3909,24 +3913,24 @@ function rgbaStr (rgba) {
     return 'rgba(' + rgba.join(',') + ')';
 }
 
-},{"./colorScales":25,"arraytools":15,"clone":20}],27:[function(require,module,exports){
+},{"./colorScales":26,"arraytools":16,"clone":21}],28:[function(require,module,exports){
 module.exports = function gainToDecibels(value) {
   if (value == null) return 0
   return Math.round(Math.round(20 * (0.43429 * Math.log(value)) * 100) / 100 * 10) / 10
 }
-},{}],28:[function(require,module,exports){
+},{}],29:[function(require,module,exports){
 module.exports = {
   fromGain: require('./from-gain'),
   toGain: require('./to-gain')
 }
-},{"./from-gain":27,"./to-gain":29}],29:[function(require,module,exports){
+},{"./from-gain":28,"./to-gain":30}],30:[function(require,module,exports){
 module.exports = function decibelsToGain(value){
   if (value <= -40){
     return 0
   }
   return Math.round(Math.exp(value / 8.6858) * 10000) / 10000
 }
-},{}],30:[function(require,module,exports){
+},{}],31:[function(require,module,exports){
 module.exports = getSize
 
 function getSize(element) {
@@ -3962,7 +3966,7 @@ function parse(prop) {
   return parseFloat(prop) || 0
 }
 
-},{}],31:[function(require,module,exports){
+},{}],32:[function(require,module,exports){
 module.exports = function flatten(list, depth) {
   depth = (typeof depth == 'number') ? depth : Infinity;
 
@@ -3987,7 +3991,7 @@ module.exports = function flatten(list, depth) {
   }
 };
 
-},{}],32:[function(require,module,exports){
+},{}],33:[function(require,module,exports){
 var isFunction = require('is-function')
 
 module.exports = forEach
@@ -4035,7 +4039,7 @@ function forEachObject(object, iterator, context) {
     }
 }
 
-},{"is-function":43}],33:[function(require,module,exports){
+},{"is-function":44}],34:[function(require,module,exports){
 /**
  * Real values fourier transform.
  *
@@ -4259,7 +4263,7 @@ function reverseBinPermute (N, dest, source) {
 
 	dest[nm1] = source[nm1];
 };
-},{}],34:[function(require,module,exports){
+},{}],35:[function(require,module,exports){
 module.exports = getCanvasContext
 function getCanvasContext (type, opts) {
   if (typeof type !== 'string') {
@@ -4299,7 +4303,7 @@ function getCanvasContext (type, opts) {
   return (gl || null) // ensure null on fail
 }
 
-},{}],35:[function(require,module,exports){
+},{}],36:[function(require,module,exports){
 (function (global){
 "use strict";
 
@@ -4314,14 +4318,14 @@ if (global.AnalyserNode && !global.AnalyserNode.prototype.getFloatTimeDomainData
 }
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],36:[function(require,module,exports){
+},{}],37:[function(require,module,exports){
 /** generate unique id for selector */
 var counter = Date.now() % 1e9;
 
 module.exports = function getUid(){
 	return (Math.random() * 1e9 >>> 0) + (counter++);
 };
-},{}],37:[function(require,module,exports){
+},{}],38:[function(require,module,exports){
 /**
  * @module  gl-spectrum
  */
@@ -4810,7 +4814,7 @@ Component.prototype.start = function () {
 /**
  * Render main loop
  */
-Component.prototype.render = function () {
+Component.prototype.render = function (data) {
 	var gl = this.context;
 
 	if (!this.is2d) {
@@ -4819,14 +4823,11 @@ Component.prototype.render = function () {
 
 		gl.viewport.apply(gl, this.glViewport);
 
-		this.emit('render');
-		this.draw();
-
 		// gl.viewport.apply(gl, viewport);
 	}
-	else {
-		this.emit('render');
-	}
+
+	this.emit('render', data);
+	this.draw(data);
 
 	return this;
 };
@@ -4834,7 +4835,7 @@ Component.prototype.render = function () {
 /**
  * A specific way to draw data.
  */
-Component.prototype.draw = function () {
+Component.prototype.draw = function (data) {
 
 	this.gl.useProgram(this.program);
 	//Q: how should we organize drawArrays method?
@@ -4893,7 +4894,7 @@ Component.prototype.createProgram = function (vSrc, fSrc) {
 
 	return program;
 }
-},{"canvas-fit":19,"events":3,"get-canvas-context":34,"inherits":39,"is-browser":41,"mutype/is-object":53,"raf-loop":59,"xtend/mutable":78}],38:[function(require,module,exports){
+},{"canvas-fit":20,"events":3,"get-canvas-context":35,"inherits":40,"is-browser":42,"mutype/is-object":54,"raf-loop":60,"xtend/mutable":79}],39:[function(require,module,exports){
 (function (global){
 if (typeof window !== "undefined") {
     module.exports = window;
@@ -4904,7 +4905,7 @@ if (typeof window !== "undefined") {
 }
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],39:[function(require,module,exports){
+},{}],40:[function(require,module,exports){
 if (typeof Object.create === 'function') {
   // implementation from standard node.js 'util' module
   module.exports = function inherits(ctor, superCtor) {
@@ -4929,7 +4930,7 @@ if (typeof Object.create === 'function') {
   }
 }
 
-},{}],40:[function(require,module,exports){
+},{}],41:[function(require,module,exports){
 var inserted = {};
 
 module.exports = function (css, options) {
@@ -4953,9 +4954,9 @@ module.exports = function (css, options) {
     }
 };
 
-},{}],41:[function(require,module,exports){
-module.exports = true;
 },{}],42:[function(require,module,exports){
+module.exports = true;
+},{}],43:[function(require,module,exports){
 /*global window*/
 
 /**
@@ -4972,7 +4973,7 @@ module.exports = function isNode(val){
   return 'number' == typeof val.nodeType && 'string' == typeof val.nodeName;
 }
 
-},{}],43:[function(require,module,exports){
+},{}],44:[function(require,module,exports){
 module.exports = isFunction
 
 var toString = Object.prototype.toString
@@ -4989,7 +4990,7 @@ function isFunction (fn) {
       fn === window.prompt))
 };
 
-},{}],44:[function(require,module,exports){
+},{}],45:[function(require,module,exports){
 module.exports = isMobile;
 
 function isMobile (ua) {
@@ -5002,7 +5003,7 @@ function isMobile (ua) {
   return /(android|bb\d+|meego).+mobile|avantgo|bada\/|blackberry|blazer|compal|elaine|fennec|hiptop|iemobile|ip(hone|od)|iris|kindle|lge |maemo|midp|mmp|mobile.+firefox|netfront|opera m(ob|in)i|palm( os)?|phone|p(ixi|re)\/|plucker|pocket|psp|series(4|6)0|symbian|treo|up\.(browser|link)|vodafone|wap|windows (ce|phone)|xda|xiino/i.test(ua) || /1207|6310|6590|3gso|4thp|50[1-6]i|770s|802s|a wa|abac|ac(er|oo|s\-)|ai(ko|rn)|al(av|ca|co)|amoi|an(ex|ny|yw)|aptu|ar(ch|go)|as(te|us)|attw|au(di|\-m|r |s )|avan|be(ck|ll|nq)|bi(lb|rd)|bl(ac|az)|br(e|v)w|bumb|bw\-(n|u)|c55\/|capi|ccwa|cdm\-|cell|chtm|cldc|cmd\-|co(mp|nd)|craw|da(it|ll|ng)|dbte|dc\-s|devi|dica|dmob|do(c|p)o|ds(12|\-d)|el(49|ai)|em(l2|ul)|er(ic|k0)|esl8|ez([4-7]0|os|wa|ze)|fetc|fly(\-|_)|g1 u|g560|gene|gf\-5|g\-mo|go(\.w|od)|gr(ad|un)|haie|hcit|hd\-(m|p|t)|hei\-|hi(pt|ta)|hp( i|ip)|hs\-c|ht(c(\-| |_|a|g|p|s|t)|tp)|hu(aw|tc)|i\-(20|go|ma)|i230|iac( |\-|\/)|ibro|idea|ig01|ikom|im1k|inno|ipaq|iris|ja(t|v)a|jbro|jemu|jigs|kddi|keji|kgt( |\/)|klon|kpt |kwc\-|kyo(c|k)|le(no|xi)|lg( g|\/(k|l|u)|50|54|\-[a-w])|libw|lynx|m1\-w|m3ga|m50\/|ma(te|ui|xo)|mc(01|21|ca)|m\-cr|me(rc|ri)|mi(o8|oa|ts)|mmef|mo(01|02|bi|de|do|t(\-| |o|v)|zz)|mt(50|p1|v )|mwbp|mywa|n10[0-2]|n20[2-3]|n30(0|2)|n50(0|2|5)|n7(0(0|1)|10)|ne((c|m)\-|on|tf|wf|wg|wt)|nok(6|i)|nzph|o2im|op(ti|wv)|oran|owg1|p800|pan(a|d|t)|pdxg|pg(13|\-([1-8]|c))|phil|pire|pl(ay|uc)|pn\-2|po(ck|rt|se)|prox|psio|pt\-g|qa\-a|qc(07|12|21|32|60|\-[2-7]|i\-)|qtek|r380|r600|raks|rim9|ro(ve|zo)|s55\/|sa(ge|ma|mm|ms|ny|va)|sc(01|h\-|oo|p\-)|sdk\/|se(c(\-|0|1)|47|mc|nd|ri)|sgh\-|shar|sie(\-|m)|sk\-0|sl(45|id)|sm(al|ar|b3|it|t5)|so(ft|ny)|sp(01|h\-|v\-|v )|sy(01|mb)|t2(18|50)|t6(00|10|18)|ta(gt|lk)|tcl\-|tdg\-|tel(i|m)|tim\-|t\-mo|to(pl|sh)|ts(70|m\-|m3|m5)|tx\-9|up(\.b|g1|si)|utst|v400|v750|veri|vi(rg|te)|vk(40|5[0-3]|\-v)|vm40|voda|vulc|vx(52|53|60|61|70|80|81|83|85|98)|w3c(\-| )|webc|whit|wi(g |nc|nw)|wmlb|wonu|x700|yas\-|your|zeto|zte\-/i.test(ua.substr(0,4));
 }
 
-},{}],45:[function(require,module,exports){
+},{}],46:[function(require,module,exports){
 
 /**
  * Expose `isUrl`.
@@ -5027,7 +5028,7 @@ function isUrl(string){
   return matcher.test(string);
 }
 
-},{}],46:[function(require,module,exports){
+},{}],47:[function(require,module,exports){
 'use strict';
 module.exports = leftPad;
 
@@ -5066,7 +5067,7 @@ function leftPad (str, len, ch) {
   return pad + str;
 }
 
-},{}],47:[function(require,module,exports){
+},{}],48:[function(require,module,exports){
 /**
  * Clamp value.
  * Detects proper clamp min/max.
@@ -5081,7 +5082,7 @@ function leftPad (str, len, ch) {
 module.exports = require('./wrap')(function(a, min, max){
 	return max > min ? Math.max(Math.min(a,max),min) : Math.max(Math.min(a,min),max);
 });
-},{"./wrap":52}],48:[function(require,module,exports){
+},{"./wrap":53}],49:[function(require,module,exports){
 /**
  * @module  mumath/closest
  */
@@ -5098,7 +5099,7 @@ module.exports = function closest (num, arr) {
 	}
 	return curr;
 }
-},{}],49:[function(require,module,exports){
+},{}],50:[function(require,module,exports){
 /**
  * Base 10 logarithm
  *
@@ -5107,7 +5108,7 @@ module.exports = function closest (num, arr) {
 module.exports = require('./wrap')(function (a) {
 	return Math.log(a) / Math.log(10);
 });
-},{"./wrap":52}],50:[function(require,module,exports){
+},{"./wrap":53}],51:[function(require,module,exports){
 /**
  * @module mumath/order
  */
@@ -5116,7 +5117,7 @@ module.exports = require('./wrap')(function (n) {
 	var order = Math.floor(Math.log(n) / Math.LN10 + 0.000000001);
 	return Math.pow(10,order);
 });
-},{"./wrap":52}],51:[function(require,module,exports){
+},{"./wrap":53}],52:[function(require,module,exports){
 /**
  * Whether element is between left & right including
  *
@@ -5135,7 +5136,7 @@ module.exports = require('./wrap')(function(a, left, right){
 	if (a <= right && a >= left) return true;
 	return false;
 });
-},{"./wrap":52}],52:[function(require,module,exports){
+},{"./wrap":53}],53:[function(require,module,exports){
 /**
  * Get fn wrapped with array/object attrs recognition
  *
@@ -5177,7 +5178,7 @@ module.exports = function(fn){
 		}
 	};
 };
-},{}],53:[function(require,module,exports){
+},{}],54:[function(require,module,exports){
 /**
  * @module mutype/is-object
  */
@@ -5189,9 +5190,9 @@ module.exports = function(o){
 	// return obj === Object(obj);
 	return !!o && typeof o === 'object' && o.constructor === Object;
 };
-},{}],54:[function(require,module,exports){
-module.exports=[["#69d2e7","#a7dbd8","#e0e4cc","#f38630","#fa6900"],["#fe4365","#fc9d9a","#f9cdad","#c8c8a9","#83af9b"],["#ecd078","#d95b43","#c02942","#542437","#53777a"],["#556270","#4ecdc4","#c7f464","#ff6b6b","#c44d58"],["#774f38","#e08e79","#f1d4af","#ece5ce","#c5e0dc"],["#e8ddcb","#cdb380","#036564","#033649","#031634"],["#490a3d","#bd1550","#e97f02","#f8ca00","#8a9b0f"],["#594f4f","#547980","#45ada8","#9de0ad","#e5fcc2"],["#00a0b0","#6a4a3c","#cc333f","#eb6841","#edc951"],["#e94e77","#d68189","#c6a49a","#c6e5d9","#f4ead5"],["#3fb8af","#7fc7af","#dad8a7","#ff9e9d","#ff3d7f"],["#d9ceb2","#948c75","#d5ded9","#7a6a53","#99b2b7"],["#ffffff","#cbe86b","#f2e9e1","#1c140d","#cbe86b"],["#efffcd","#dce9be","#555152","#2e2633","#99173c"],["#343838","#005f6b","#008c9e","#00b4cc","#00dffc"],["#413e4a","#73626e","#b38184","#f0b49e","#f7e4be"],["#99b898","#fecea8","#ff847c","#e84a5f","#2a363b"],["#ff4e50","#fc913a","#f9d423","#ede574","#e1f5c4"],["#655643","#80bca3","#f6f7bd","#e6ac27","#bf4d28"],["#351330","#424254","#64908a","#e8caa4","#cc2a41"],["#00a8c6","#40c0cb","#f9f2e7","#aee239","#8fbe00"],["#554236","#f77825","#d3ce3d","#f1efa5","#60b99a"],["#ff9900","#424242","#e9e9e9","#bcbcbc","#3299bb"],["#8c2318","#5e8c6a","#88a65e","#bfb35a","#f2c45a"],["#fad089","#ff9c5b","#f5634a","#ed303c","#3b8183"],["#5d4157","#838689","#a8caba","#cad7b2","#ebe3aa"],["#ff4242","#f4fad2","#d4ee5e","#e1edb9","#f0f2eb"],["#d1e751","#ffffff","#000000","#4dbce9","#26ade4"],["#f8b195","#f67280","#c06c84","#6c5b7b","#355c7d"],["#bcbdac","#cfbe27","#f27435","#f02475","#3b2d38"],["#5e412f","#fcebb6","#78c0a8","#f07818","#f0a830"],["#1b676b","#519548","#88c425","#bef202","#eafde6"],["#eee6ab","#c5bc8e","#696758","#45484b","#36393b"],["#452632","#91204d","#e4844a","#e8bf56","#e2f7ce"],["#f0d8a8","#3d1c00","#86b8b1","#f2d694","#fa2a00"],["#f04155","#ff823a","#f2f26f","#fff7bd","#95cfb7"],["#2a044a","#0b2e59","#0d6759","#7ab317","#a0c55f"],["#bbbb88","#ccc68d","#eedd99","#eec290","#eeaa88"],["#b9d7d9","#668284","#2a2829","#493736","#7b3b3b"],["#67917a","#170409","#b8af03","#ccbf82","#e33258"],["#a3a948","#edb92e","#f85931","#ce1836","#009989"],["#b3cc57","#ecf081","#ffbe40","#ef746f","#ab3e5b"],["#e8d5b7","#0e2430","#fc3a51","#f5b349","#e8d5b9"],["#ab526b","#bca297","#c5ceae","#f0e2a4","#f4ebc3"],["#607848","#789048","#c0d860","#f0f0d8","#604848"],["#aab3ab","#c4cbb7","#ebefc9","#eee0b7","#e8caaf"],["#300030","#480048","#601848","#c04848","#f07241"],["#a8e6ce","#dcedc2","#ffd3b5","#ffaaa6","#ff8c94"],["#3e4147","#fffedf","#dfba69","#5a2e2e","#2a2c31"],["#515151","#ffffff","#00b4ff","#eeeeee"],["#fc354c","#29221f","#13747d","#0abfbc","#fcf7c5"],["#1c2130","#028f76","#b3e099","#ffeaad","#d14334"],["#b6d8c0","#c8d9bf","#dadabd","#ecdbbc","#fedcba"],["#edebe6","#d6e1c7","#94c7b6","#403b33","#d3643b"],["#fdf1cc","#c6d6b8","#987f69","#e3ad40","#fcd036"],["#cc0c39","#e6781e","#c8cf02","#f8fcc1","#1693a7"],["#5c323e","#a82743","#e15e32","#c0d23e","#e5f04c"],["#dad6ca","#1bb0ce","#4f8699","#6a5e72","#563444"],["#230f2b","#f21d41","#ebebbc","#bce3c5","#82b3ae"],["#b9d3b0","#81bda4","#b28774","#f88f79","#f6aa93"],["#3a111c","#574951","#83988e","#bcdea5","#e6f9bc"],["#a7c5bd","#e5ddcb","#eb7b59","#cf4647","#524656"],["#5e3929","#cd8c52","#b7d1a3","#dee8be","#fcf7d3"],["#1c0113","#6b0103","#a30006","#c21a01","#f03c02"],["#8dccad","#988864","#fea6a2","#f9d6ac","#ffe9af"],["#c1b398","#605951","#fbeec2","#61a6ab","#accec0"],["#382f32","#ffeaf2","#fcd9e5","#fbc5d8","#f1396d"],["#e3dfba","#c8d6bf","#93ccc6","#6cbdb5","#1a1f1e"],["#5e9fa3","#dcd1b4","#fab87f","#f87e7b","#b05574"],["#4e395d","#827085","#8ebe94","#ccfc8e","#dc5b3e"],["#000000","#9f111b","#b11623","#292c37","#cccccc"],["#cfffdd","#b4dec1","#5c5863","#a85163","#ff1f4c"],["#9dc9ac","#fffec7","#f56218","#ff9d2e","#919167"],["#413d3d","#040004","#c8ff00","#fa023c","#4b000f"],["#951f2b","#f5f4d7","#e0dfb1","#a5a36c","#535233"],["#1b325f","#9cc4e4","#e9f2f9","#3a89c9","#f26c4f"],["#a8a7a7","#cc527a","#e8175d","#474747","#363636"],["#eff3cd","#b2d5ba","#61ada0","#248f8d","#605063"],["#2d2d29","#215a6d","#3ca2a2","#92c7a3","#dfece6"],["#ffedbf","#f7803c","#f54828","#2e0d23","#f8e4c1"],["#9d7e79","#ccac95","#9a947c","#748b83","#5b756c"],["#f6f6f6","#e8e8e8","#333333","#990100","#b90504"],["#0ca5b0","#4e3f30","#fefeeb","#f8f4e4","#a5b3aa"],["#edf6ee","#d1c089","#b3204d","#412e28","#151101"],["#d1313d","#e5625c","#f9bf76","#8eb2c5","#615375"],["#fffbb7","#a6f6af","#66b6ab","#5b7c8d","#4f2958"],["#4e4d4a","#353432","#94ba65","#2790b0","#2b4e72"],["#f38a8a","#55443d","#a0cab5","#cde9ca","#f1edd0"],["#a70267","#f10c49","#fb6b41","#f6d86b","#339194"],["#fcfef5","#e9ffe1","#cdcfb7","#d6e6c3","#fafbe3"],["#4d3b3b","#de6262","#ffb88c","#ffd0b3","#f5e0d3"],["#c2412d","#d1aa34","#a7a844","#a46583","#5a1e4a"],["#046d8b","#309292","#2fb8ac","#93a42a","#ecbe13"],["#f8edd1","#d88a8a","#474843","#9d9d93","#c5cfc6"],["#9cddc8","#bfd8ad","#ddd9ab","#f7af63","#633d2e"],["#ffefd3","#fffee4","#d0ecea","#9fd6d2","#8b7a5e"],["#30261c","#403831","#36544f","#1f5f61","#0b8185"],["#75616b","#bfcff7","#dce4f7","#f8f3bf","#d34017"],["#a1dbb2","#fee5ad","#faca66","#f7a541","#f45d4c"],["#ff003c","#ff8a00","#fabe28","#88c100","#00c176"],["#fe4365","#fc9d9a","#f9cdad","#c8c8a9","#83af9b"],["#ecd078","#d95b43","#c02942","#542437","#53777a"],["#556270","#4ecdc4","#c7f464","#ff6b6b","#c44d58"],["#774f38","#e08e79","#f1d4af","#ece5ce","#c5e0dc"],["#e8ddcb","#cdb380","#036564","#033649","#031634"],["#490a3d","#bd1550","#e97f02","#f8ca00","#8a9b0f"],["#594f4f","#547980","#45ada8","#9de0ad","#e5fcc2"],["#00a0b0","#6a4a3c","#cc333f","#eb6841","#edc951"],["#e94e77","#d68189","#c6a49a","#c6e5d9","#f4ead5"],["#3fb8af","#7fc7af","#dad8a7","#ff9e9d","#ff3d7f"],["#d9ceb2","#948c75","#d5ded9","#7a6a53","#99b2b7"],["#ffffff","#cbe86b","#f2e9e1","#1c140d","#cbe86b"],["#efffcd","#dce9be","#555152","#2e2633","#99173c"],["#343838","#005f6b","#008c9e","#00b4cc","#00dffc"],["#413e4a","#73626e","#b38184","#f0b49e","#f7e4be"],["#99b898","#fecea8","#ff847c","#e84a5f","#2a363b"],["#ff4e50","#fc913a","#f9d423","#ede574","#e1f5c4"],["#655643","#80bca3","#f6f7bd","#e6ac27","#bf4d28"],["#351330","#424254","#64908a","#e8caa4","#cc2a41"],["#00a8c6","#40c0cb","#f9f2e7","#aee239","#8fbe00"],["#554236","#f77825","#d3ce3d","#f1efa5","#60b99a"],["#ff9900","#424242","#e9e9e9","#bcbcbc","#3299bb"],["#8c2318","#5e8c6a","#88a65e","#bfb35a","#f2c45a"],["#fad089","#ff9c5b","#f5634a","#ed303c","#3b8183"],["#5d4157","#838689","#a8caba","#cad7b2","#ebe3aa"],["#ff4242","#f4fad2","#d4ee5e","#e1edb9","#f0f2eb"],["#d1e751","#ffffff","#000000","#4dbce9","#26ade4"],["#f8b195","#f67280","#c06c84","#6c5b7b","#355c7d"],["#bcbdac","#cfbe27","#f27435","#f02475","#3b2d38"],["#5e412f","#fcebb6","#78c0a8","#f07818","#f0a830"],["#1b676b","#519548","#88c425","#bef202","#eafde6"],["#eee6ab","#c5bc8e","#696758","#45484b","#36393b"],["#452632","#91204d","#e4844a","#e8bf56","#e2f7ce"],["#f0d8a8","#3d1c00","#86b8b1","#f2d694","#fa2a00"],["#f04155","#ff823a","#f2f26f","#fff7bd","#95cfb7"],["#2a044a","#0b2e59","#0d6759","#7ab317","#a0c55f"],["#bbbb88","#ccc68d","#eedd99","#eec290","#eeaa88"],["#b9d7d9","#668284","#2a2829","#493736","#7b3b3b"],["#67917a","#170409","#b8af03","#ccbf82","#e33258"],["#a3a948","#edb92e","#f85931","#ce1836","#009989"],["#b3cc57","#ecf081","#ffbe40","#ef746f","#ab3e5b"],["#e8d5b7","#0e2430","#fc3a51","#f5b349","#e8d5b9"],["#ab526b","#bca297","#c5ceae","#f0e2a4","#f4ebc3"],["#607848","#789048","#c0d860","#f0f0d8","#604848"],["#aab3ab","#c4cbb7","#ebefc9","#eee0b7","#e8caaf"],["#300030","#480048","#601848","#c04848","#f07241"],["#a8e6ce","#dcedc2","#ffd3b5","#ffaaa6","#ff8c94"],["#3e4147","#fffedf","#dfba69","#5a2e2e","#2a2c31"],["#515151","#ffffff","#00b4ff","#eeeeee"],["#fc354c","#29221f","#13747d","#0abfbc","#fcf7c5"],["#1c2130","#028f76","#b3e099","#ffeaad","#d14334"],["#b6d8c0","#c8d9bf","#dadabd","#ecdbbc","#fedcba"],["#edebe6","#d6e1c7","#94c7b6","#403b33","#d3643b"],["#fdf1cc","#c6d6b8","#987f69","#e3ad40","#fcd036"],["#cc0c39","#e6781e","#c8cf02","#f8fcc1","#1693a7"],["#5c323e","#a82743","#e15e32","#c0d23e","#e5f04c"],["#dad6ca","#1bb0ce","#4f8699","#6a5e72","#563444"],["#230f2b","#f21d41","#ebebbc","#bce3c5","#82b3ae"],["#b9d3b0","#81bda4","#b28774","#f88f79","#f6aa93"],["#3a111c","#574951","#83988e","#bcdea5","#e6f9bc"],["#a7c5bd","#e5ddcb","#eb7b59","#cf4647","#524656"],["#5e3929","#cd8c52","#b7d1a3","#dee8be","#fcf7d3"],["#1c0113","#6b0103","#a30006","#c21a01","#f03c02"],["#8dccad","#988864","#fea6a2","#f9d6ac","#ffe9af"],["#c1b398","#605951","#fbeec2","#61a6ab","#accec0"],["#382f32","#ffeaf2","#fcd9e5","#fbc5d8","#f1396d"],["#e3dfba","#c8d6bf","#93ccc6","#6cbdb5","#1a1f1e"],["#5e9fa3","#dcd1b4","#fab87f","#f87e7b","#b05574"],["#4e395d","#827085","#8ebe94","#ccfc8e","#dc5b3e"],["#000000","#9f111b","#b11623","#292c37","#cccccc"],["#cfffdd","#b4dec1","#5c5863","#a85163","#ff1f4c"],["#9dc9ac","#fffec7","#f56218","#ff9d2e","#919167"],["#413d3d","#040004","#c8ff00","#fa023c","#4b000f"],["#951f2b","#f5f4d7","#e0dfb1","#a5a36c","#535233"],["#1b325f","#9cc4e4","#e9f2f9","#3a89c9","#f26c4f"],["#a8a7a7","#cc527a","#e8175d","#474747","#363636"],["#eff3cd","#b2d5ba","#61ada0","#248f8d","#605063"],["#2d2d29","#215a6d","#3ca2a2","#92c7a3","#dfece6"],["#ffedbf","#f7803c","#f54828","#2e0d23","#f8e4c1"],["#9d7e79","#ccac95","#9a947c","#748b83","#5b756c"],["#f6f6f6","#e8e8e8","#333333","#990100","#b90504"],["#0ca5b0","#4e3f30","#fefeeb","#f8f4e4","#a5b3aa"],["#edf6ee","#d1c089","#b3204d","#412e28","#151101"],["#d1313d","#e5625c","#f9bf76","#8eb2c5","#615375"],["#fffbb7","#a6f6af","#66b6ab","#5b7c8d","#4f2958"],["#4e4d4a","#353432","#94ba65","#2790b0","#2b4e72"],["#f38a8a","#55443d","#a0cab5","#cde9ca","#f1edd0"],["#a70267","#f10c49","#fb6b41","#f6d86b","#339194"],["#fcfef5","#e9ffe1","#cdcfb7","#d6e6c3","#fafbe3"],["#4d3b3b","#de6262","#ffb88c","#ffd0b3","#f5e0d3"],["#c2412d","#d1aa34","#a7a844","#a46583","#5a1e4a"],["#046d8b","#309292","#2fb8ac","#93a42a","#ecbe13"],["#f8edd1","#d88a8a","#474843","#9d9d93","#c5cfc6"],["#9cddc8","#bfd8ad","#ddd9ab","#f7af63","#633d2e"],["#ffefd3","#fffee4","#d0ecea","#9fd6d2","#8b7a5e"],["#30261c","#403831","#36544f","#1f5f61","#0b8185"],["#75616b","#bfcff7","#dce4f7","#f8f3bf","#d34017"],["#a1dbb2","#fee5ad","#faca66","#f7a541","#f45d4c"],["#ff003c","#ff8a00","#fabe28","#88c100","#00c176"],["#aaff00","#ffaa00","#ff00aa","#aa00ff","#00aaff"]]
 },{}],55:[function(require,module,exports){
+module.exports=[["#69d2e7","#a7dbd8","#e0e4cc","#f38630","#fa6900"],["#fe4365","#fc9d9a","#f9cdad","#c8c8a9","#83af9b"],["#ecd078","#d95b43","#c02942","#542437","#53777a"],["#556270","#4ecdc4","#c7f464","#ff6b6b","#c44d58"],["#774f38","#e08e79","#f1d4af","#ece5ce","#c5e0dc"],["#e8ddcb","#cdb380","#036564","#033649","#031634"],["#490a3d","#bd1550","#e97f02","#f8ca00","#8a9b0f"],["#594f4f","#547980","#45ada8","#9de0ad","#e5fcc2"],["#00a0b0","#6a4a3c","#cc333f","#eb6841","#edc951"],["#e94e77","#d68189","#c6a49a","#c6e5d9","#f4ead5"],["#3fb8af","#7fc7af","#dad8a7","#ff9e9d","#ff3d7f"],["#d9ceb2","#948c75","#d5ded9","#7a6a53","#99b2b7"],["#ffffff","#cbe86b","#f2e9e1","#1c140d","#cbe86b"],["#efffcd","#dce9be","#555152","#2e2633","#99173c"],["#343838","#005f6b","#008c9e","#00b4cc","#00dffc"],["#413e4a","#73626e","#b38184","#f0b49e","#f7e4be"],["#99b898","#fecea8","#ff847c","#e84a5f","#2a363b"],["#ff4e50","#fc913a","#f9d423","#ede574","#e1f5c4"],["#655643","#80bca3","#f6f7bd","#e6ac27","#bf4d28"],["#351330","#424254","#64908a","#e8caa4","#cc2a41"],["#00a8c6","#40c0cb","#f9f2e7","#aee239","#8fbe00"],["#554236","#f77825","#d3ce3d","#f1efa5","#60b99a"],["#ff9900","#424242","#e9e9e9","#bcbcbc","#3299bb"],["#8c2318","#5e8c6a","#88a65e","#bfb35a","#f2c45a"],["#fad089","#ff9c5b","#f5634a","#ed303c","#3b8183"],["#5d4157","#838689","#a8caba","#cad7b2","#ebe3aa"],["#ff4242","#f4fad2","#d4ee5e","#e1edb9","#f0f2eb"],["#d1e751","#ffffff","#000000","#4dbce9","#26ade4"],["#f8b195","#f67280","#c06c84","#6c5b7b","#355c7d"],["#bcbdac","#cfbe27","#f27435","#f02475","#3b2d38"],["#5e412f","#fcebb6","#78c0a8","#f07818","#f0a830"],["#1b676b","#519548","#88c425","#bef202","#eafde6"],["#eee6ab","#c5bc8e","#696758","#45484b","#36393b"],["#452632","#91204d","#e4844a","#e8bf56","#e2f7ce"],["#f0d8a8","#3d1c00","#86b8b1","#f2d694","#fa2a00"],["#f04155","#ff823a","#f2f26f","#fff7bd","#95cfb7"],["#2a044a","#0b2e59","#0d6759","#7ab317","#a0c55f"],["#bbbb88","#ccc68d","#eedd99","#eec290","#eeaa88"],["#b9d7d9","#668284","#2a2829","#493736","#7b3b3b"],["#67917a","#170409","#b8af03","#ccbf82","#e33258"],["#a3a948","#edb92e","#f85931","#ce1836","#009989"],["#b3cc57","#ecf081","#ffbe40","#ef746f","#ab3e5b"],["#e8d5b7","#0e2430","#fc3a51","#f5b349","#e8d5b9"],["#ab526b","#bca297","#c5ceae","#f0e2a4","#f4ebc3"],["#607848","#789048","#c0d860","#f0f0d8","#604848"],["#aab3ab","#c4cbb7","#ebefc9","#eee0b7","#e8caaf"],["#300030","#480048","#601848","#c04848","#f07241"],["#a8e6ce","#dcedc2","#ffd3b5","#ffaaa6","#ff8c94"],["#3e4147","#fffedf","#dfba69","#5a2e2e","#2a2c31"],["#515151","#ffffff","#00b4ff","#eeeeee"],["#fc354c","#29221f","#13747d","#0abfbc","#fcf7c5"],["#1c2130","#028f76","#b3e099","#ffeaad","#d14334"],["#b6d8c0","#c8d9bf","#dadabd","#ecdbbc","#fedcba"],["#edebe6","#d6e1c7","#94c7b6","#403b33","#d3643b"],["#fdf1cc","#c6d6b8","#987f69","#e3ad40","#fcd036"],["#cc0c39","#e6781e","#c8cf02","#f8fcc1","#1693a7"],["#5c323e","#a82743","#e15e32","#c0d23e","#e5f04c"],["#dad6ca","#1bb0ce","#4f8699","#6a5e72","#563444"],["#230f2b","#f21d41","#ebebbc","#bce3c5","#82b3ae"],["#b9d3b0","#81bda4","#b28774","#f88f79","#f6aa93"],["#3a111c","#574951","#83988e","#bcdea5","#e6f9bc"],["#a7c5bd","#e5ddcb","#eb7b59","#cf4647","#524656"],["#5e3929","#cd8c52","#b7d1a3","#dee8be","#fcf7d3"],["#1c0113","#6b0103","#a30006","#c21a01","#f03c02"],["#8dccad","#988864","#fea6a2","#f9d6ac","#ffe9af"],["#c1b398","#605951","#fbeec2","#61a6ab","#accec0"],["#382f32","#ffeaf2","#fcd9e5","#fbc5d8","#f1396d"],["#e3dfba","#c8d6bf","#93ccc6","#6cbdb5","#1a1f1e"],["#5e9fa3","#dcd1b4","#fab87f","#f87e7b","#b05574"],["#4e395d","#827085","#8ebe94","#ccfc8e","#dc5b3e"],["#000000","#9f111b","#b11623","#292c37","#cccccc"],["#cfffdd","#b4dec1","#5c5863","#a85163","#ff1f4c"],["#9dc9ac","#fffec7","#f56218","#ff9d2e","#919167"],["#413d3d","#040004","#c8ff00","#fa023c","#4b000f"],["#951f2b","#f5f4d7","#e0dfb1","#a5a36c","#535233"],["#1b325f","#9cc4e4","#e9f2f9","#3a89c9","#f26c4f"],["#a8a7a7","#cc527a","#e8175d","#474747","#363636"],["#eff3cd","#b2d5ba","#61ada0","#248f8d","#605063"],["#2d2d29","#215a6d","#3ca2a2","#92c7a3","#dfece6"],["#ffedbf","#f7803c","#f54828","#2e0d23","#f8e4c1"],["#9d7e79","#ccac95","#9a947c","#748b83","#5b756c"],["#f6f6f6","#e8e8e8","#333333","#990100","#b90504"],["#0ca5b0","#4e3f30","#fefeeb","#f8f4e4","#a5b3aa"],["#edf6ee","#d1c089","#b3204d","#412e28","#151101"],["#d1313d","#e5625c","#f9bf76","#8eb2c5","#615375"],["#fffbb7","#a6f6af","#66b6ab","#5b7c8d","#4f2958"],["#4e4d4a","#353432","#94ba65","#2790b0","#2b4e72"],["#f38a8a","#55443d","#a0cab5","#cde9ca","#f1edd0"],["#a70267","#f10c49","#fb6b41","#f6d86b","#339194"],["#fcfef5","#e9ffe1","#cdcfb7","#d6e6c3","#fafbe3"],["#4d3b3b","#de6262","#ffb88c","#ffd0b3","#f5e0d3"],["#c2412d","#d1aa34","#a7a844","#a46583","#5a1e4a"],["#046d8b","#309292","#2fb8ac","#93a42a","#ecbe13"],["#f8edd1","#d88a8a","#474843","#9d9d93","#c5cfc6"],["#9cddc8","#bfd8ad","#ddd9ab","#f7af63","#633d2e"],["#ffefd3","#fffee4","#d0ecea","#9fd6d2","#8b7a5e"],["#30261c","#403831","#36544f","#1f5f61","#0b8185"],["#75616b","#bfcff7","#dce4f7","#f8f3bf","#d34017"],["#a1dbb2","#fee5ad","#faca66","#f7a541","#f45d4c"],["#ff003c","#ff8a00","#fabe28","#88c100","#00c176"],["#fe4365","#fc9d9a","#f9cdad","#c8c8a9","#83af9b"],["#ecd078","#d95b43","#c02942","#542437","#53777a"],["#556270","#4ecdc4","#c7f464","#ff6b6b","#c44d58"],["#774f38","#e08e79","#f1d4af","#ece5ce","#c5e0dc"],["#e8ddcb","#cdb380","#036564","#033649","#031634"],["#490a3d","#bd1550","#e97f02","#f8ca00","#8a9b0f"],["#594f4f","#547980","#45ada8","#9de0ad","#e5fcc2"],["#00a0b0","#6a4a3c","#cc333f","#eb6841","#edc951"],["#e94e77","#d68189","#c6a49a","#c6e5d9","#f4ead5"],["#3fb8af","#7fc7af","#dad8a7","#ff9e9d","#ff3d7f"],["#d9ceb2","#948c75","#d5ded9","#7a6a53","#99b2b7"],["#ffffff","#cbe86b","#f2e9e1","#1c140d","#cbe86b"],["#efffcd","#dce9be","#555152","#2e2633","#99173c"],["#343838","#005f6b","#008c9e","#00b4cc","#00dffc"],["#413e4a","#73626e","#b38184","#f0b49e","#f7e4be"],["#99b898","#fecea8","#ff847c","#e84a5f","#2a363b"],["#ff4e50","#fc913a","#f9d423","#ede574","#e1f5c4"],["#655643","#80bca3","#f6f7bd","#e6ac27","#bf4d28"],["#351330","#424254","#64908a","#e8caa4","#cc2a41"],["#00a8c6","#40c0cb","#f9f2e7","#aee239","#8fbe00"],["#554236","#f77825","#d3ce3d","#f1efa5","#60b99a"],["#ff9900","#424242","#e9e9e9","#bcbcbc","#3299bb"],["#8c2318","#5e8c6a","#88a65e","#bfb35a","#f2c45a"],["#fad089","#ff9c5b","#f5634a","#ed303c","#3b8183"],["#5d4157","#838689","#a8caba","#cad7b2","#ebe3aa"],["#ff4242","#f4fad2","#d4ee5e","#e1edb9","#f0f2eb"],["#d1e751","#ffffff","#000000","#4dbce9","#26ade4"],["#f8b195","#f67280","#c06c84","#6c5b7b","#355c7d"],["#bcbdac","#cfbe27","#f27435","#f02475","#3b2d38"],["#5e412f","#fcebb6","#78c0a8","#f07818","#f0a830"],["#1b676b","#519548","#88c425","#bef202","#eafde6"],["#eee6ab","#c5bc8e","#696758","#45484b","#36393b"],["#452632","#91204d","#e4844a","#e8bf56","#e2f7ce"],["#f0d8a8","#3d1c00","#86b8b1","#f2d694","#fa2a00"],["#f04155","#ff823a","#f2f26f","#fff7bd","#95cfb7"],["#2a044a","#0b2e59","#0d6759","#7ab317","#a0c55f"],["#bbbb88","#ccc68d","#eedd99","#eec290","#eeaa88"],["#b9d7d9","#668284","#2a2829","#493736","#7b3b3b"],["#67917a","#170409","#b8af03","#ccbf82","#e33258"],["#a3a948","#edb92e","#f85931","#ce1836","#009989"],["#b3cc57","#ecf081","#ffbe40","#ef746f","#ab3e5b"],["#e8d5b7","#0e2430","#fc3a51","#f5b349","#e8d5b9"],["#ab526b","#bca297","#c5ceae","#f0e2a4","#f4ebc3"],["#607848","#789048","#c0d860","#f0f0d8","#604848"],["#aab3ab","#c4cbb7","#ebefc9","#eee0b7","#e8caaf"],["#300030","#480048","#601848","#c04848","#f07241"],["#a8e6ce","#dcedc2","#ffd3b5","#ffaaa6","#ff8c94"],["#3e4147","#fffedf","#dfba69","#5a2e2e","#2a2c31"],["#515151","#ffffff","#00b4ff","#eeeeee"],["#fc354c","#29221f","#13747d","#0abfbc","#fcf7c5"],["#1c2130","#028f76","#b3e099","#ffeaad","#d14334"],["#b6d8c0","#c8d9bf","#dadabd","#ecdbbc","#fedcba"],["#edebe6","#d6e1c7","#94c7b6","#403b33","#d3643b"],["#fdf1cc","#c6d6b8","#987f69","#e3ad40","#fcd036"],["#cc0c39","#e6781e","#c8cf02","#f8fcc1","#1693a7"],["#5c323e","#a82743","#e15e32","#c0d23e","#e5f04c"],["#dad6ca","#1bb0ce","#4f8699","#6a5e72","#563444"],["#230f2b","#f21d41","#ebebbc","#bce3c5","#82b3ae"],["#b9d3b0","#81bda4","#b28774","#f88f79","#f6aa93"],["#3a111c","#574951","#83988e","#bcdea5","#e6f9bc"],["#a7c5bd","#e5ddcb","#eb7b59","#cf4647","#524656"],["#5e3929","#cd8c52","#b7d1a3","#dee8be","#fcf7d3"],["#1c0113","#6b0103","#a30006","#c21a01","#f03c02"],["#8dccad","#988864","#fea6a2","#f9d6ac","#ffe9af"],["#c1b398","#605951","#fbeec2","#61a6ab","#accec0"],["#382f32","#ffeaf2","#fcd9e5","#fbc5d8","#f1396d"],["#e3dfba","#c8d6bf","#93ccc6","#6cbdb5","#1a1f1e"],["#5e9fa3","#dcd1b4","#fab87f","#f87e7b","#b05574"],["#4e395d","#827085","#8ebe94","#ccfc8e","#dc5b3e"],["#000000","#9f111b","#b11623","#292c37","#cccccc"],["#cfffdd","#b4dec1","#5c5863","#a85163","#ff1f4c"],["#9dc9ac","#fffec7","#f56218","#ff9d2e","#919167"],["#413d3d","#040004","#c8ff00","#fa023c","#4b000f"],["#951f2b","#f5f4d7","#e0dfb1","#a5a36c","#535233"],["#1b325f","#9cc4e4","#e9f2f9","#3a89c9","#f26c4f"],["#a8a7a7","#cc527a","#e8175d","#474747","#363636"],["#eff3cd","#b2d5ba","#61ada0","#248f8d","#605063"],["#2d2d29","#215a6d","#3ca2a2","#92c7a3","#dfece6"],["#ffedbf","#f7803c","#f54828","#2e0d23","#f8e4c1"],["#9d7e79","#ccac95","#9a947c","#748b83","#5b756c"],["#f6f6f6","#e8e8e8","#333333","#990100","#b90504"],["#0ca5b0","#4e3f30","#fefeeb","#f8f4e4","#a5b3aa"],["#edf6ee","#d1c089","#b3204d","#412e28","#151101"],["#d1313d","#e5625c","#f9bf76","#8eb2c5","#615375"],["#fffbb7","#a6f6af","#66b6ab","#5b7c8d","#4f2958"],["#4e4d4a","#353432","#94ba65","#2790b0","#2b4e72"],["#f38a8a","#55443d","#a0cab5","#cde9ca","#f1edd0"],["#a70267","#f10c49","#fb6b41","#f6d86b","#339194"],["#fcfef5","#e9ffe1","#cdcfb7","#d6e6c3","#fafbe3"],["#4d3b3b","#de6262","#ffb88c","#ffd0b3","#f5e0d3"],["#c2412d","#d1aa34","#a7a844","#a46583","#5a1e4a"],["#046d8b","#309292","#2fb8ac","#93a42a","#ecbe13"],["#f8edd1","#d88a8a","#474843","#9d9d93","#c5cfc6"],["#9cddc8","#bfd8ad","#ddd9ab","#f7af63","#633d2e"],["#ffefd3","#fffee4","#d0ecea","#9fd6d2","#8b7a5e"],["#30261c","#403831","#36544f","#1f5f61","#0b8185"],["#75616b","#bfcff7","#dce4f7","#f8f3bf","#d34017"],["#a1dbb2","#fee5ad","#faca66","#f7a541","#f45d4c"],["#ff003c","#ff8a00","#fabe28","#88c100","#00c176"],["#aaff00","#ffaa00","#ff00aa","#aa00ff","#00aaff"]]
+},{}],56:[function(require,module,exports){
 'use strict';
 /* eslint-disable no-unused-vars */
 var hasOwnProperty = Object.prototype.hasOwnProperty;
@@ -5278,7 +5279,7 @@ module.exports = shouldUseNative() ? Object.assign : function (target, source) {
 	return to;
 };
 
-},{}],56:[function(require,module,exports){
+},{}],57:[function(require,module,exports){
 var trim = require('trim')
   , forEach = require('for-each')
   , isArray = function(arg) {
@@ -5310,7 +5311,7 @@ module.exports = function (headers) {
 
   return result
 }
-},{"for-each":32,"trim":64}],57:[function(require,module,exports){
+},{"for-each":33,"trim":65}],58:[function(require,module,exports){
 (function (process){
 // Generated by CoffeeScript 1.7.1
 (function() {
@@ -5346,7 +5347,7 @@ module.exports = function (headers) {
 }).call(this);
 
 }).call(this,require('_process'))
-},{"_process":6}],58:[function(require,module,exports){
+},{"_process":6}],59:[function(require,module,exports){
 /**
  * @module  plot-grid
  */
@@ -5664,7 +5665,7 @@ Grid.prototype.update = function (options) {
 
 	return this;
 };
-},{"events":3,"get-uid":36,"inherits":39,"insert-css":40,"is-browser":41,"mumath/closest":48,"mumath/lg":49,"mumath/order":50,"mumath/within":51,"xtend":77}],59:[function(require,module,exports){
+},{"events":3,"get-uid":37,"inherits":40,"insert-css":41,"is-browser":42,"mumath/closest":49,"mumath/lg":50,"mumath/order":51,"mumath/within":52,"xtend":78}],60:[function(require,module,exports){
 var inherits = require('inherits')
 var EventEmitter = require('events').EventEmitter
 var now = require('right-now')
@@ -5709,7 +5710,7 @@ Engine.prototype.tick = function() {
     this.emit('tick', dt)
     this.last = time
 }
-},{"events":3,"inherits":39,"raf":60,"right-now":61}],60:[function(require,module,exports){
+},{"events":3,"inherits":40,"raf":61,"right-now":62}],61:[function(require,module,exports){
 (function (global){
 var now = require('performance-now')
   , root = typeof window === 'undefined' ? global : window
@@ -5785,7 +5786,7 @@ module.exports.polyfill = function() {
 }
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"performance-now":57}],61:[function(require,module,exports){
+},{"performance-now":58}],62:[function(require,module,exports){
 (function (global){
 module.exports =
   global.performance &&
@@ -5796,7 +5797,7 @@ module.exports =
   }
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],62:[function(require,module,exports){
+},{}],63:[function(require,module,exports){
 var isDom = require('is-dom')
 var lookup = require('browser-media-mime-type')
 
@@ -5853,7 +5854,7 @@ function extension (data) {
   return data.substring(extIdx + 1)
 }
 
-},{"browser-media-mime-type":17,"is-dom":42}],63:[function(require,module,exports){
+},{"browser-media-mime-type":18,"is-dom":43}],64:[function(require,module,exports){
 /**
  * @module audio-demo
  */
@@ -6873,7 +6874,7 @@ StartApp.prototype.setParamValue = function (name, value) {
 		el.value = value;
 	}
 }
-},{"audio-context":16,"color-parse":22,"color-space/hsl":23,"events":3,"get-float-time-domain-data":35,"inherits":39,"insert-css":40,"is-mobile":44,"is-url":45,"left-pad":46,"mutype/is-object":53,"raf":60,"right-now":61,"web-audio-player":65,"xhr":74,"xtend/mutable":78}],64:[function(require,module,exports){
+},{"audio-context":17,"color-parse":23,"color-space/hsl":24,"events":3,"get-float-time-domain-data":36,"inherits":40,"insert-css":41,"is-mobile":45,"is-url":46,"left-pad":47,"mutype/is-object":54,"raf":61,"right-now":62,"web-audio-player":66,"xhr":75,"xtend/mutable":79}],65:[function(require,module,exports){
 
 exports = module.exports = trim;
 
@@ -6889,7 +6890,7 @@ exports.right = function(str){
   return str.replace(/\s*$/, '');
 };
 
-},{}],65:[function(require,module,exports){
+},{}],66:[function(require,module,exports){
 var buffer = require('./lib/buffer-source')
 var media = require('./lib/media-source')
 
@@ -6901,14 +6902,14 @@ function webAudioPlayer (src, opt) {
   else return media(src, opt)
 }
 
-},{"./lib/buffer-source":67,"./lib/media-source":70}],66:[function(require,module,exports){
+},{"./lib/buffer-source":68,"./lib/media-source":71}],67:[function(require,module,exports){
 module.exports = createAudioContext
 function createAudioContext () {
   var AudioCtor = window.AudioContext || window.webkitAudioContext
   return new AudioCtor()
 }
 
-},{}],67:[function(require,module,exports){
+},{}],68:[function(require,module,exports){
 (function (process){
 var canPlaySrc = require('./can-play-src')
 var createAudioContext = require('./audio-context')
@@ -7068,7 +7069,7 @@ function createBufferSource (src, opt) {
 }
 
 }).call(this,require('_process'))
-},{"./audio-context":66,"./can-play-src":68,"./resume-context":71,"./xhr-audio":72,"_process":6,"events":3,"right-now":61}],68:[function(require,module,exports){
+},{"./audio-context":67,"./can-play-src":69,"./resume-context":72,"./xhr-audio":73,"_process":6,"events":3,"right-now":62}],69:[function(require,module,exports){
 var lookup = require('browser-media-mime-type')
 var audio
 
@@ -7118,7 +7119,7 @@ function extension (data) {
   return data.substring(extIdx + 1)
 }
 
-},{"browser-media-mime-type":17}],69:[function(require,module,exports){
+},{"browser-media-mime-type":18}],70:[function(require,module,exports){
 module.exports = addOnce
 function addOnce (element, event, fn) {
   function tmp (ev) {
@@ -7127,7 +7128,7 @@ function addOnce (element, event, fn) {
   }
   element.addEventListener(event, tmp, false)
 }
-},{}],70:[function(require,module,exports){
+},{}],71:[function(require,module,exports){
 (function (process){
 var EventEmitter = require('events').EventEmitter
 var createAudio = require('simple-media-element').audio
@@ -7262,7 +7263,7 @@ function createMediaSource (src, opt) {
 }
 
 }).call(this,require('_process'))
-},{"./audio-context":66,"./can-play-src":68,"./event-add-once":69,"./resume-context":71,"_process":6,"events":3,"object-assign":55,"simple-media-element":62}],71:[function(require,module,exports){
+},{"./audio-context":67,"./can-play-src":69,"./event-add-once":70,"./resume-context":72,"_process":6,"events":3,"object-assign":56,"simple-media-element":63}],72:[function(require,module,exports){
 module.exports = function (audioContext) {
   if (audioContext.state === 'suspended' &&
       typeof audioContext.resume === 'function') {
@@ -7270,7 +7271,7 @@ module.exports = function (audioContext) {
   }
 }
 
-},{}],72:[function(require,module,exports){
+},{}],73:[function(require,module,exports){
 var xhr = require('xhr')
 var xhrProgress = require('xhr-progress')
 
@@ -7304,7 +7305,7 @@ function xhrAudio (audioContext, src, cb, progress, decoding) {
   }
 }
 
-},{"xhr":74,"xhr-progress":73}],73:[function(require,module,exports){
+},{"xhr":75,"xhr-progress":74}],74:[function(require,module,exports){
 var EventEmitter = require('events').EventEmitter
 
 module.exports = progress
@@ -7355,7 +7356,7 @@ function progress(xhr) {
   return emitter
 }
 
-},{"events":3}],74:[function(require,module,exports){
+},{"events":3}],75:[function(require,module,exports){
 "use strict";
 var window = require("global/window")
 var once = require("once")
@@ -7576,7 +7577,7 @@ function _createXHR(options) {
 
 function noop() {}
 
-},{"global/window":75,"is-function":43,"once":76,"parse-headers":56,"xtend":77}],75:[function(require,module,exports){
+},{"global/window":76,"is-function":44,"once":77,"parse-headers":57,"xtend":78}],76:[function(require,module,exports){
 (function (global){
 if (typeof window !== "undefined") {
     module.exports = window;
@@ -7589,7 +7590,7 @@ if (typeof window !== "undefined") {
 }
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],76:[function(require,module,exports){
+},{}],77:[function(require,module,exports){
 module.exports = once
 
 once.proto = once(function () {
@@ -7610,7 +7611,7 @@ function once (fn) {
   }
 }
 
-},{}],77:[function(require,module,exports){
+},{}],78:[function(require,module,exports){
 module.exports = extend
 
 var hasOwnProperty = Object.prototype.hasOwnProperty;
@@ -7633,7 +7634,7 @@ function extend() {
     return target
 }
 
-},{}],78:[function(require,module,exports){
+},{}],79:[function(require,module,exports){
 module.exports = extend
 
 var hasOwnProperty = Object.prototype.hasOwnProperty;
@@ -7654,9 +7655,9 @@ function extend(target) {
     return target
 }
 
-},{}],79:[function(require,module,exports){
+},{}],80:[function(require,module,exports){
 var startApp = require('start-app');
-var Spectrogram = require('./');
+var Spectrogram = require('./2d');
 var db = require('decibels');
 var ft = require('fourier-transform');
 var ctx = require('audio-context');
@@ -7732,7 +7733,7 @@ var spectrogram = Spectrogram({
 	smoothing: .1,
 	fill: palette,
 	maxDecibels: 0,
-	minDecibels: -50
+	minDecibels: -100
 	// logarithmic: false,
 	// autostart: false
 	// weighting:
@@ -7862,4 +7863,4 @@ function pushChunk () {
 
 	pushIntervalId = setTimeout(pushChunk, 1000 / speed);
 }
-},{"./":7,"audio-context":16,"color-parse":22,"colormap/colorScales":25,"decibels":28,"flatten":31,"fourier-transform":33,"is-mobile":44,"nice-color-palettes/200":54,"start-app":63}]},{},[79]);
+},{"./2d":7,"audio-context":17,"color-parse":23,"colormap/colorScales":26,"decibels":29,"flatten":32,"fourier-transform":34,"is-mobile":45,"nice-color-palettes/200":55,"start-app":64}]},{},[80]);
