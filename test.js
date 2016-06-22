@@ -7,8 +7,7 @@ var colorScales = require('colormap/colorScales');
 var palettes = require('nice-color-palettes/200');
 var colorParse = require('color-parse');
 var flatten = require('flatten');
-var isMobile = require('is-mobile');
-
+var isMobile = require('is-mobile')();
 
 palettes = palettes
 	.map((palette) => {
@@ -63,6 +62,15 @@ var frequencies = new Float32Array(analyser.frequencyBinCount);
 // for (var i = 0; i < frequencies.length; i++) frequencies[i] = -150;
 // frequencies = frequencies.map((v) => db.fromGain(v));
 
+
+var app = startApp({
+	github: 'audio-lab/gl-spectrogram',
+	color: palette[palette.length - 1],
+	// source: 'https://soundcloud.com/xlr8r/sets/xlr8r-top-10-downloads-of-may',
+	source: isMobile ? './sample.mp3' : 'https://soundcloud.com/sincopat/alberto-sola-sincopat-podcast-157'
+});
+
+
 var spectrogram = Spectrogram({
 	smoothing: .1,
 	fill: palette,
@@ -74,109 +82,104 @@ var spectrogram = Spectrogram({
 });
 
 
-var app = startApp({
-	github: 'audio-lab/gl-spectrogram',
-	color: palette[palette.length - 1],
-	// source: 'https://soundcloud.com/xlr8r/sets/xlr8r-top-10-downloads-of-may',
-	source: isMobile ? './sample.mp3' : 'https://soundcloud.com/sincopat/alberto-sola-sincopat-podcast-157',
-	params: {
-		fill: {
-			type: 'select',
-			values: (() => {
-				var values = {};
-				for (var name in colorScales) {
-					if (name === 'alpha') continue;
-					if (name === 'hsv') continue;
-					if (name === 'rainbow') continue;
-					if (name === 'rainbow-soft') continue;
-					if (name === 'phase') continue;
-					values[name] = name;
-				}
-				return values;
-			})(),
-			value: 'greys',
-			change: function (value, state) {
-				spectrogram.setFill(value, this.getParamValue('inversed'));
-				this.setColor(spectrogram.color);
+app.addParams({
+	fill: {
+		type: 'select',
+		values: (() => {
+			var values = {};
+			for (var name in colorScales) {
+				if (name === 'alpha') continue;
+				if (name === 'hsv') continue;
+				if (name === 'rainbow') continue;
+				if (name === 'rainbow-soft') continue;
+				if (name === 'phase') continue;
+				values[name] = name;
 			}
+			return values;
+		})(),
+		value: 'greys',
+		change: function (value, state) {
+			spectrogram.setFill(value, this.getParamValue('inversed'));
+			this.setColor(spectrogram.color);
+		}
+	},
+	inversed: {
+		value: false,
+		change: function (value) {
+			spectrogram.setFill(this.getParamValue('fill'), value);
+			this.setColor(spectrogram.color);
+		}
+	},
+	weighting: {
+		values: {
+			itu: 'itu',
+			a: 'a',
+			b: 'b',
+			c: 'c',
+			d: 'd',
+			z: 'z'
 		},
-		inversed: {
-			value: false,
-			change: function (value) {
-				spectrogram.setFill(this.getParamValue('fill'), value);
-				this.setColor(spectrogram.color);
-			}
-		},
-		weighting: {
-			values: {
-				itu: 'itu',
-				a: 'a',
-				b: 'b',
-				c: 'c',
-				d: 'd',
-				z: 'z'
-			},
-			value: spectrogram.weighting,
-			change: v => {
-				spectrogram.weighting = v;
-			}
-		},
-		logarithmic: {
-			value: spectrogram.logarithmic,
-			change: v => {
-				spectrogram.logarithmic = v;
-				spectrogram.update();
-			}
-		},
-		grid: {
-			value: spectrogram.grid,
-			change: v => {
-				spectrogram.grid = v;
-				spectrogram.update();
-			}
-		},
-		// axes: spectrogram.axes,
-		smoothing: {
-			min: 0,
-			max: 1,
-			step: .01,
-			value: spectrogram.smoothing,
-			change: v => {
-				spectrogram.smoothing = v;
-			}
-		},
-		speed: {
-			type: 'range',
-			value: speed,
-			min: 1,
-			//4ms is minimal interval for HTML5 (250 times per second)
-			max: 250,
-			change: (v) => {
-				speed = v;
-			}
-		},
-		minDecibels: {
-			type: 'range',
-			value: spectrogram.minDecibels,
-			min: -100,
-			max: 0,
-			change: (v) => {
-				spectrogram.minDecibels = v;
-				spectrogram.update();
-			}
-		},
-		maxDecibels: {
-			type: 'range',
-			value: spectrogram.maxDecibels,
-			min: -100,
-			max: 0,
-			change: (v) => {
-				spectrogram.maxDecibels = v;
-				spectrogram.update();
-			}
+		value: spectrogram.weighting,
+		change: v => {
+			spectrogram.weighting = v;
+		}
+	},
+	logarithmic: {
+		value: spectrogram.logarithmic,
+		change: v => {
+			spectrogram.logarithmic = v;
+			spectrogram.update();
+		}
+	},
+	grid: {
+		value: spectrogram.grid,
+		change: v => {
+			spectrogram.grid = v;
+			spectrogram.update();
+		}
+	},
+	// axes: spectrogram.axes,
+	smoothing: {
+		min: 0,
+		max: 1,
+		step: .01,
+		value: spectrogram.smoothing,
+		change: v => {
+			spectrogram.smoothing = v;
+		}
+	},
+	speed: {
+		type: 'range',
+		value: speed,
+		min: 1,
+		//4ms is minimal interval for HTML5 (250 times per second)
+		max: 250,
+		change: (v) => {
+			speed = v;
+		}
+	},
+	minDecibels: {
+		type: 'range',
+		value: spectrogram.minDecibels,
+		min: -100,
+		max: 0,
+		change: (v) => {
+			spectrogram.minDecibels = v;
+			spectrogram.update();
+		}
+	},
+	maxDecibels: {
+		type: 'range',
+		value: spectrogram.maxDecibels,
+		min: -100,
+		max: 0,
+		change: (v) => {
+			spectrogram.maxDecibels = v;
+			spectrogram.update();
 		}
 	}
 });
+
 
 
 var pushIntervalId;

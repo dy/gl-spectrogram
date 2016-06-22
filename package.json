@@ -5,8 +5,8 @@
   "main": "index.js",
   "scripts": {
     "test": "budo test.js",
-    "test:browser": "budo test.js",
-    "build": "browserify test.js -g babelify -o demo/index.js"
+    "test:browser": "budo test.js -- -g bubleify",
+    "build": "browserify test.js -g bubleify -o demo/index.js"
   },
   "browserify": {
     "transform": [
