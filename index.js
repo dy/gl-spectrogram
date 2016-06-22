@@ -2376,104 +2376,136 @@ process.umask = function() { return 0; };
 
 },{}],7:[function(require,module,exports){
 /**
- * Lightweight canvas version of a spectrogram.
- * @module gl-spectrogram/2d
+ * WebGL version
+ * @module  gl-spectrogram
  */
 
 var Spectrogram = require('./lib/core');
-var parseColor = require('color-parse');
-var clamp = require('mumath/clamp');
+var Component = require('gl-component');
 
 module.exports = Spectrogram;
 
-Spectrogram.prototype.context = '2d';
-Spectrogram.prototype.autostart = false;
-
+//hook up webgl rendering routines
 Spectrogram.prototype.init = function () {
 	var this$1 = this;
 
-	var ctx = this.context;
+	var gl = this.gl;
 
-	this.count = 0;
-
-	//render only on pushes
-	this.on('push', function (magnitudes) {
-		this$1.render(magnitudes);
-		this$1.count++;
+	//preset colormap texture
+	this.setTexture('colormap', {
+		unit: 3,
+		type: gl.UNSIGNED_BYTE,
+		filter: gl.LINEAR,
+		wrap: gl.CLAMP_TO_EDGE,
 	});
 
-	//on color update
+	//save texture location
+	this.textureLocation = gl.getUniformLocation(this.program, 'texture');
+	this.maxFrequencyLocation = gl.getUniformLocation(this.program, 'maxFrequency');
+	this.minFrequencyLocation = gl.getUniformLocation(this.program, 'minFrequency');
+	this.maxDecibelsLocation = gl.getUniformLocation(this.program, 'maxDecibels');
+	this.minDecibelsLocation = gl.getUniformLocation(this.program, 'minDecibels');
+	this.logarithmicLocation = gl.getUniformLocation(this.program, 'logarithmic');
+	this.sampleRateLocation = gl.getUniformLocation(this.program, 'sampleRate');
+
+	var size = this.size;
+
+	this.shiftComponent = Component({
+		context: gl,
+		textures: {
+			texture: {
+				unit: 0,
+				data: null,
+				format: gl.RGBA,
+				type: gl.UNSIGNED_BYTE,
+				filter: gl.NEAREST,
+				wrap: gl.CLAMP_TO_EDGE,
+				width: size[0],
+				height: size[1]
+			},
+			altTexture: {
+				unit: 1,
+				data: null,
+				format: gl.RGBA,
+				type: gl.UNSIGNED_BYTE,
+				filter: gl.NEAREST,
+				wrap: gl.CLAMP_TO_EDGE,
+				width: size[0],
+				height: size[1]
+			},
+			frequencies: {
+				unit: 2,
+				data: null,
+				format: gl.ALPHA,
+				type: gl.UNSIGNED_BYTE,
+				filter: gl.NEAREST,
+				wrap: gl.CLAMP_TO_EDGE
+			}
+		},
+		frag: "\n\t\t\tprecision highp float;\n\n\t\t\tuniform sampler2D texture;\n\t\t\tuniform sampler2D frequencies;\n\t\t\tuniform vec4 viewport;\n\t\t\tuniform float count;\n\n\t\t\tconst float padding = 5.;\n\n\t\t\tvoid main () {\n\t\t\t\tvec2 one = vec2(1) / viewport.zw;\n\t\t\t\tvec2 coord = gl_FragCoord.xy / viewport.zw;\n\n\t\t\t\t//do not shift if there is a room for the data\n\t\t\t\tif (count < viewport.z - padding) {\n\t\t\t\t\tvec3 color = texture2D(texture, coord).xyz;\n\t\t\t\t\tfloat mixAmt = step(count, gl_FragCoord.x);\n\t\t\t\t\tcolor = mix(color, texture2D(frequencies, vec2(coord.y,.5)).www, mixAmt);\n\t\t\t\t\tmixAmt *= (- count - padding + gl_FragCoord.x) / padding;\n\t\t\t\t\tcolor = mix(color, vec3(0), mixAmt);\n\t\t\t\t\tgl_FragColor = vec4(color, 1);\n\t\t\t\t}\n\t\t\t\telse {\n\t\t\t\t\tcoord.x += one.x;\n\t\t\t\t\tvec3 color = texture2D(texture, coord).xyz;\n\t\t\t\t\tfloat mixAmt = step(viewport.z - padding, gl_FragCoord.x);\n\t\t\t\t\tcolor = mix(color, texture2D(frequencies, vec2(coord.y,.5)).www, mixAmt);\n\t\t\t\t\tmixAmt *= (- viewport.z + gl_FragCoord.x) / padding;\n\t\t\t\t\tcolor = mix(color, vec3(0), mixAmt);\n\t\t\t\t\tgl_FragColor = vec4(color, 1);\n\t\t\t\t}\n\t\t\t}\n\t\t",
+		phase: 0,
+		spectrogram: this,
+		framebuffer: gl.createFramebuffer(),
+		render: function () {
+			var gl = this.gl;
+
+			gl.useProgram(this.program);
+
+			//TODO: throttle rendering here
+			gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
+			gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.textures[this.phase ? 'texture' : 'altTexture'].texture, 0);
+			gl.uniform1i(this.textures.texture.location, this.phase);
+
+			this.phase = (this.phase + 1) % 2;
+
+			//vp is unbound from canvas, so we have to manually set it
+			gl.uniform4fv(gl.getUniformLocation(this.program, 'viewport'), [0,0,size[0], size[1]]);
+			gl.viewport(0,0,size[0],size[1]);
+			this.draw(this);
+
+			gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+			gl.useProgram(this.spectrogram.program);
+			gl.uniform1i(this.spectrogram.textureLocation, this.phase);
+		},
+		autostart: false,
+		float: this.float,
+		antialias: this.antialias
+	});
+
+	//hook up counter
+	this.shiftComponent.count = 0;
+	this.shiftComponent.countLocation = gl.getUniformLocation(this.shiftComponent.program, 'count');
+
+	//shift data on push
+	this.on('push', function (magnitudes) {
+		this$1.shiftComponent.setTexture('frequencies', magnitudes);
+
+		//update count
+		this$1.shiftComponent.count++;
+		gl.uniform1f(this$1.shiftComponent.countLocation, this$1.shiftComponent.count);
+
+		//do shift
+		this$1.shiftComponent.render();
+	});
+
+	//update uniforms
 	this.on('update', function () {
-		this$1.colorValues = parseColor(this$1.color).values;
-		this$1.bgValues = parseColor(this$1.canvas.style.background).values;
+		gl.uniform1f(this$1.minFrequencyLocation, this$1.minFrequency);
+		gl.uniform1f(this$1.maxFrequencyLocation, this$1.maxFrequency);
+		gl.uniform1f(this$1.minDecibelsLocation, this$1.minDecibels);
+		gl.uniform1f(this$1.maxDecibelsLocation, this$1.maxDecibels);
+		gl.uniform1f(this$1.logarithmicLocation, this$1.logarithmic ? 1 : 0);
+		gl.uniform1f(this$1.sampleRateLocation, this$1.sampleRate);
 	});
 };
 
+//background texture size
+Spectrogram.prototype.size = [1024, 1024];
 
-//get mapped frequency
-function lg (x) {
-	return Math.log(x) / Math.log(10);
-}
-
-Spectrogram.prototype.f = function (ratio) {
-	var halfRate = this.sampleRate * .5;
-	if (this.logarithmic) {
-		var logF = Math.pow(10., Math.log10(this.minFrequency) + ratio * (Math.log10(this.maxFrequency) - Math.log10(this.minFrequency)) );
-		ratio = (logF - this.minFrequency) / (this.maxFrequency - this.minFrequency);
-	}
-
-	var leftF = this.minFrequency / halfRate;
-	var rightF = this.maxFrequency / halfRate;
-
-	ratio = leftF + ratio * (rightF - leftF);
-
-	return ratio;
-}
-
-//return color based on current palette
-Spectrogram.prototype.getColor = function (ratio) {
-	var cm = this.colormap;
-	var idx = ratio*cm.length*.25;
-	var left = cm.slice(Math.floor(idx)*4, Math.floor(idx)*4 + 4);
-	var right = cm.slice(Math.ceil(idx)*4, Math.ceil(idx)*4 + 4);
-	var amt = idx % 1;
-	var values = left.map(function (v,i) { return (v * (1 - amt) + right[i] * amt)|0; } );
-	return ("rgba(" + (values.join(',')) + ")");
-}
-
-Spectrogram.prototype.draw = function (data) {
-	var this$1 = this;
-
-	var ctx = this.context;
-	var width = this.viewport[2],
-		height = this.viewport[3];
-
-	if (!this.bgValues) {
-		return;
-	}
-
-	var padding = 5;
-
-	if (this.count < this.viewport[1] + width - padding) {
-		var offset = this.count;
-	}
-	else {
-		//displace canvas
-		var imgData = ctx.getImageData(this.viewport[0], this.viewport[1], width, height);
-		ctx.putImageData(imgData, this.viewport[0]-1, this.viewport[1]);
-		var offset = this.viewport[0] + width - padding - 1;
-	}
-
-	//put new slice
-	for (var i = 0; i < height; i++) {
-		var ratio = i / height;
-		var amt = data[(this$1.f(ratio) * data.length)|0] / 255;
-		amt = clamp((amt * 100. - 100 - this$1.minDecibels) / (this$1.maxDecibels - this$1.minDecibels), 0, 1);
-		ctx.fillStyle = this$1.getColor(amt);
-		ctx.fillRect(offset, this$1.viewport[1] + height - i, 1, 1);
-	}
-}
-},{"./lib/core":8,"color-parse":23,"mumath/clamp":48}],8:[function(require,module,exports){
+//default renderer just outputs active texture
+Spectrogram.prototype.frag = "\n\tprecision highp float;\n\n\tuniform sampler2D texture;\n\tuniform sampler2D colormap;\n\tuniform vec4 viewport;\n\tuniform float sampleRate;\n\tuniform float maxFrequency;\n\tuniform float minFrequency;\n\tuniform float maxDecibels;\n\tuniform float minDecibels;\n\tuniform float logarithmic;\n\n\n\tconst float log10 = " + (Math.log(10)) + ";\n\n\tfloat lg (float x) {\n\t\treturn log(x) / log10;\n\t}\n\n\t//return a or b based on weight\n\tfloat decide (float a, float b, float w) {\n\t\treturn step(0.5, w) * b + step(w, 0.5) * a;\n\t}\n\n\t//get mapped frequency\n\tfloat f (float ratio) {\n\t\tfloat halfRate = sampleRate * .5;\n\n\t\tfloat logF = pow(10., lg(minFrequency) + ratio * (lg(maxFrequency) - lg(minFrequency)) );\n\n\t\tratio = decide(ratio, (logF - minFrequency) / (maxFrequency - minFrequency), logarithmic);\n\n\t\tfloat leftF = minFrequency / halfRate;\n\t\tfloat rightF = maxFrequency / halfRate;\n\n\t\tratio = leftF + ratio * (rightF - leftF);\n\n\t\treturn ratio;\n\t}\n\n\tvoid main () {\n\t\tvec2 coord = (gl_FragCoord.xy - viewport.xy) / viewport.zw;\n\t\tfloat intensity = texture2D(texture, vec2(coord.x, f(coord.y))).x;\n\t\tintensity = (intensity * 100. - minDecibels - 100.) / (maxDecibels - minDecibels);\n\t\tgl_FragColor = vec4(vec3(texture2D(colormap, vec2(intensity, coord.y) )), 1);\n\t}\n";
+},{"./lib/core":8,"gl-component":38}],8:[function(require,module,exports){
 /**
  * @module  gl-spectrogram/lib/core
  */
@@ -7657,7 +7689,7 @@ function extend(target) {
 
 },{}],80:[function(require,module,exports){
 var startApp = require('start-app');
-var Spectrogram = require('./2d');
+var Spectrogram = require('./');
 var db = require('decibels');
 var ft = require('fourier-transform');
 var ctx = require('audio-context');
@@ -7863,4 +7895,4 @@ function pushChunk () {
 
 	pushIntervalId = setTimeout(pushChunk, 1000 / speed);
 }
-},{"./2d":7,"audio-context":17,"color-parse":23,"colormap/colorScales":26,"decibels":29,"flatten":32,"fourier-transform":34,"is-mobile":45,"nice-color-palettes/200":55,"start-app":64}]},{},[80]);
+},{"./":7,"audio-context":17,"color-parse":23,"colormap/colorScales":26,"decibels":29,"flatten":32,"fourier-transform":34,"is-mobile":45,"nice-color-palettes/200":55,"start-app":64}]},{},[80]);
