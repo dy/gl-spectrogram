@@ -5,6 +5,7 @@
 
 var Spectrogram = require('./lib/core');
 var parseColor = require('color-parse');
+var clamp = require('mumath/clamp');
 
 module.exports = Spectrogram;
 
@@ -47,6 +48,17 @@ Spectrogram.prototype.f = function (ratio) {
 	return ratio;
 }
 
+//return color based on current palette
+Spectrogram.prototype.getColor = function (ratio) {
+	var cm = this.colormap;
+	var idx = ratio*cm.length*.25;
+	var left = cm.slice(Math.floor(idx)*4, Math.floor(idx)*4 + 4);
+	var right = cm.slice(Math.ceil(idx)*4, Math.ceil(idx)*4 + 4);
+	var amt = idx % 1;
+	var values = left.map((v,i) => (v * (1 - amt) + right[i] * amt)|0 );
+	return `rgba(${values.join(',')})`;
+}
+
 Spectrogram.prototype.draw = function (data) {
 	var ctx = this.context;
 	var width = this.viewport[2],
@@ -60,15 +72,13 @@ Spectrogram.prototype.draw = function (data) {
 	var imgData = ctx.getImageData(this.viewport[0], this.viewport[1], width, height);
 	ctx.putImageData(imgData, this.viewport[0]-1, this.viewport[1]);
 
-	var bg = this.bgValues, color = this.colorValues;
 
 	//put new slice
-	var step = 1;//height / (array.length / 2);
 	for (var i = 0; i < height; i++) {
 		var ratio = i / height;
-		var mixAmt = data[(this.f(ratio) * data.length)|0] / 255;
-		var values = bg.map((v,i) => (v * (1 - mixAmt) + color[i] * mixAmt)|0 );
-		ctx.fillStyle = `rgb(${values.join(',')})`;
-		ctx.fillRect(this.viewport[0] + width - 1, this.viewport[1] + height - i, 1, step);
+		var amt = data[(this.f(ratio) * data.length)|0] / 255;
+		amt = clamp((amt * 100. - 100 - this.minDecibels) / (this.maxDecibels - this.minDecibels), 0, 1);
+		ctx.fillStyle = this.getColor(amt);
+		ctx.fillRect(this.viewport[0] + width - 1, this.viewport[1] + height - i, 1, 1);
 	}
 }

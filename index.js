@@ -39,7 +39,7 @@ Spectrogram.prototype.init = function () {
 				data: null,
 				format: gl.RGBA,
 				type: gl.UNSIGNED_BYTE,
-				filter: gl.LINEAR,
+				filter: gl.NEAREST,
 				wrap: gl.CLAMP_TO_EDGE,
 				width: size[0],
 				height: size[1]
@@ -49,7 +49,7 @@ Spectrogram.prototype.init = function () {
 				data: null,
 				format: gl.RGBA,
 				type: gl.UNSIGNED_BYTE,
-				filter: gl.LINEAR,
+				filter: gl.NEAREST,
 				wrap: gl.CLAMP_TO_EDGE,
 				width: size[0],
 				height: size[1]

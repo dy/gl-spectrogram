@@ -75,7 +75,7 @@ var spectrogram = Spectrogram({
 	smoothing: .1,
 	fill: palette,
 	maxDecibels: 0,
-	minDecibels: -50
+	minDecibels: -100
 	// logarithmic: false,
 	// autostart: false
 	// weighting:
