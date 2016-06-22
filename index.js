@@ -1,37 +1,16 @@
 /**
+ * WebGL version
  * @module  gl-spectrogram
  */
 
-
-var extend = require('xtend/mutable');
+var Spectrogram = require('./lib/core');
 var Component = require('gl-component');
-var inherits = require('inherits');
-var isBrowser = require('is-browser');
-var createGrid = require('plot-grid');
-var flatten = require('flatten');
-var lg = require('mumath/lg');
-var clamp = require('mumath/clamp');
-var weighting = require('a-weighting');
-var colormap = require('colormap');
-var parseColor = require('color-parse');
-var hsl = require('color-space/hsl');
-var colorScales = require('colormap/colorScales');
 
 module.exports = Spectrogram;
 
-
-
-/**
- * @contructor
- */
-function Spectrogram (options) {
-	if (!(this instanceof Spectrogram)) return new Spectrogram(options);
-
-	Component.call(this, options);
-
+//hook up webgl rendering routines
+Spectrogram.prototype.init = function () {
 	var gl = this.gl;
-
-	if (isBrowser) this.container.classList.add('gl-spectrogram');
 
 	//preset colormap texture
 	this.setTexture('colormap', {
@@ -152,15 +131,28 @@ function Spectrogram (options) {
 	this.shiftComponent.count = 0;
 	this.shiftComponent.countLocation = gl.getUniformLocation(this.shiftComponent.program, 'count');
 
-	//preset initial freqs
-	this.push(this.frequencies);
+	//shift data on push
+	this.on('push', (magnitudes) => {
+		this.shiftComponent.setTexture('frequencies', magnitudes);
 
-	//init style props
-	this.update();
-}
+		//update count
+		this.shiftComponent.count++;
+		gl.uniform1f(this.shiftComponent.countLocation, this.shiftComponent.count);
 
-inherits(Spectrogram, Component);
+		//do shift
+		this.shiftComponent.render();
+	});
 
+	//update uniforms
+	this.on('update', () => {
+		gl.uniform1f(this.minFrequencyLocation, this.minFrequency);
+		gl.uniform1f(this.maxFrequencyLocation, this.maxFrequency);
+		gl.uniform1f(this.minDecibelsLocation, this.minDecibels);
+		gl.uniform1f(this.maxDecibelsLocation, this.maxDecibels);
+		gl.uniform1f(this.logarithmicLocation, this.logarithmic ? 1 : 0);
+		gl.uniform1f(this.sampleRateLocation, this.sampleRate);
+	});
+};
 
 //default renderer just outputs active texture
 Spectrogram.prototype.frag = `
@@ -211,262 +203,3 @@ Spectrogram.prototype.frag = `
 		gl_FragColor = vec4(vec3(texture2D(colormap, vec2(intensity, coord.y) )), 1);
 	}
 `;
-
-Spectrogram.prototype.antialias = false;
-Spectrogram.prototype.premultipliedAlpha = true;
-Spectrogram.prototype.alpha = true;
-Spectrogram.prototype.float = false;
-
-Spectrogram.prototype.maxDecibels = -30;
-Spectrogram.prototype.minDecibels = -90;
-
-Spectrogram.prototype.maxFrequency = 20000;
-Spectrogram.prototype.minFrequency = 40;
-
-Spectrogram.prototype.smoothing = 0.75;
-Spectrogram.prototype.details = 1;
-
-Spectrogram.prototype.grid = true;
-Spectrogram.prototype.axes = false;
-Spectrogram.prototype.logarithmic = true;
-Spectrogram.prototype.weighting = 'itu';
-Spectrogram.prototype.sampleRate = 44100;
-
-Spectrogram.prototype.fill = 'greys';
-Spectrogram.prototype.background = undefined;
-
-
-
-//array with initial values of the last moment
-Spectrogram.prototype.frequencies = Array(1024).fill(-150);
-
-
-//set last actual frequencies values
-Spectrogram.prototype.push = function (frequencies) {
-	if (!frequencies) frequencies = [-150];
-
-	var gl = this.gl;
-	var halfRate = this.sampleRate * 0.5;
-	var l = halfRate / this.frequencies.length;
-
-	//choose bigger data
-	var bigger = this.frequencies.length >= frequencies.length ? this.frequencies : frequencies;
-	var shorter = (bigger === frequencies ? this.frequencies : frequencies);
-	bigger = [].slice.call(bigger);
-
-	//apply smoothing
-	var smoothing = (bigger === this.frequencies ? 1 - this.smoothing : this.smoothing);
-
-	for (var i = 0; i < bigger.length; i++) {
-		bigger[i] = clamp(bigger[i], -100, 0) * smoothing + clamp(shorter[Math.floor(shorter.length * (i / bigger.length))], -100, 0) * (1 - smoothing);
-	}
-
-	//save actual frequencies
-	this.frequencies = bigger;
-
-	//prepare f’s for rendering
-	magnitudes = bigger.slice();
-
-	//apply a-weighting
-	if (weighting[this.weighting]) {
-		var w = weighting[this.weighting];
-		magnitudes = magnitudes.map((mag, i, data) => clamp(mag + 20 * Math.log(w(i * l)) / Math.log(10), -200, 0));
-	}
-
-	//map mags to 0..255 range limiting by db subrange
-	magnitudes = magnitudes.map((value) => clamp(255 * (1 + value / 100), 0, 255));
-
-	this.shiftComponent.setTexture('frequencies', magnitudes);
-
-	//update count
-	this.shiftComponent.count++;
-	gl.uniform1f(this.shiftComponent.countLocation, this.shiftComponent.count);
-
-	//do shift
-	this.shiftComponent.render();
-
-	return this;
-};
-
-
-/**
- * Reset colormap
- */
-Spectrogram.prototype.setFill = function (cm, inverse) {
-	this.fill = cm;
-	this.inversed = inverse;
-
-	//named colormap
-	if (typeof cm === 'string') {
-		//a color scale
-		if (colorScales[cm]) {
-			var cm = (flatten(colormap({
-				colormap: cm,
-				nshades: 128,
-				format: 'rgba',
-				alpha: 1
-			})));//.map((v,i) => !((i + 1) % 4) ? v : v/255));
-		}
-		//url
-		else if (/\\|\//.test(cm)) {
-			this.setTexture('fill', cm);
-			return this;
-		}
-		//plain color or CSS color string
-		else {
-			var parsed = parseColor(cm);
-
-			if (parsed.space === 'hsl') {
-				cm = hsl.rgb(parsed.values);
-			}
-			else {
-				cm = parsed.values;
-			}
-		}
-	}
-	else if (!cm) {
-		if (!this.background) this.setBackground([0,0,0,1]);
-		return this;
-	}
-	//image, canvas etc
-	else if (!Array.isArray(cm)) {
-		this.setTexture('fill', cm);
-
-		return this;
-	}
-	//custom array, like palette etc.
-	else {
-		cm = flatten(cm);
-	}
-
-	if (inverse) {
-		var reverse = cm.slice();
-		for (var i = 0; i < cm.length; i+=4){
-			reverse[cm.length - i - 1] = cm[i + 3];
-			reverse[cm.length - i - 2] = cm[i + 2];
-			reverse[cm.length - i - 3] = cm[i + 1];
-			reverse[cm.length - i - 4] = cm[i + 0];
-		}
-		cm = reverse;
-	}
-
-	this.setTexture('colormap', {
-		data: cm,
-		height: 1,
-		width: (cm.length / 4)|0
-	});
-
-	//ensure bg
-	if (!this.background) {
-		this.setBackground(cm.slice(0, 4));
-	}
-
-	var mainColor = cm.slice(-4);
-	this.color = `rgba(${mainColor})`;
-
-	//set grid color to colormap’s color
-	if (this.gridComponent) {
-		this.gridComponent.linesContainer.style.color = this.color;
-	}
-
-	return this;
-};
-
-
-/** Set background */
-Spectrogram.prototype.setBackground = function (bg) {
-	if (this.background !== null) {
-		var bgStyle = null;
-		if (typeof bg === 'string') {
-			bgStyle = bg;
-		}
-		else if (Array.isArray(bg)) {
-			//map 0..1 range to 0..255
-			if (bg[0] && bg[0] <= 1 && bg[1] && bg[1] <= 1 && bg[2] && bg[2] <= 1) {
-				bg = [
-					bg[0] * 255, bg[1] * 255, bg[2] * 255, bg[3] || 1
-				];
-			}
-
-			bgStyle = `rgba(${bg.slice(0,3).map(v => Math.round(v)).join(', ')}, ${bg[3]})`;
-		}
-		this.canvas.style.background = bgStyle;
-	}
-
-	return this;
-};
-
-
-
-
-//update view
-Spectrogram.prototype.update = function () {
-	var gl = this.gl;
-
-	if (this.grid) {
-		if (!this.gridComponent) {
-			this.gridComponent = createGrid({
-				container: this.container,
-				viewport: () => this.viewport,
-				lines: Array.isArray(this.grid.lines) ? this.grid.lines : (this.grid.lines === undefined || this.grid.lines === true) && [{
-					min: this.minFrequency,
-					max: this.maxFrequency,
-					orientation: 'y',
-					logarithmic: this.logarithmic,
-					titles: function (value) {
-						return (value >= 1000 ? ((value / 1000).toLocaleString() + 'k') : value.toLocaleString()) + 'Hz';
-					}
-				}, this.logarithmic ? {
-					min: this.minFrequency,
-					max: this.maxFrequency,
-					orientation: 'y',
-					logarithmic: this.logarithmic,
-					values: function (value) {
-						var str = value.toString();
-						if (str[0] !== '1') return null;
-						return value;
-					},
-					titles: null,
-					style: {
-						borderLeftStyle: 'solid',
-						pointerEvents: 'none',
-						opacity: '0.08',
-						display: this.logarithmic ? null :'none'
-					}
-				} : null],
-				axes: Array.isArray(this.grid.axes) ? this.grid.axes : (this.grid.axes || this.axes) && [{
-					name: 'Frequency',
-					labels: function (value, i, opt) {
-						var str = value.toString();
-						if (str[0] !== '2' && str[0] !== '1' && str[0] !== '5') return null;
-						return opt.titles[i];
-					}
-				}]
-			});
-
-			this.on('resize', () => {
-				if (this.isPlannedGridUpdate) return;
-				this.isPlannedGridUpdate = true;
-				this.once('render', () => {
-					this.isPlannedGridUpdate = false;
-					this.gridComponent.update();
-				});
-			});
-		}
-		else {
-			this.gridComponent.linesContainer.style.display = 'block';
-		}
-	}
-	else if (this.gridComponent) {
-		this.gridComponent.linesContainer.style.display = 'none';
-	}
-
-	this.gl.uniform1f(this.minFrequencyLocation, this.minFrequency);
-	this.gl.uniform1f(this.maxFrequencyLocation, this.maxFrequency);
-	this.gl.uniform1f(this.minDecibelsLocation, this.minDecibels);
-	this.gl.uniform1f(this.maxDecibelsLocation, this.maxDecibels);
-	this.gl.uniform1f(this.logarithmicLocation, this.logarithmic ? 1 : 0);
-	this.gl.uniform1f(this.sampleRateLocation, this.sampleRate);
-
-	this.setFill(this.fill, this.inversed);
-};
