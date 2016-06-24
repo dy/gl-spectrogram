@@ -67,7 +67,8 @@ var app = startApp({
 	github: 'audio-lab/gl-spectrogram',
 	color: palette[palette.length - 1],
 	// source: 'https://soundcloud.com/xlr8r/sets/xlr8r-top-10-downloads-of-may',
-	source: isMobile ? './sample.mp3' : 'https://soundcloud.com/sincopat/alberto-sola-sincopat-podcast-157'
+	source: isMobile ? './sample.mp3' : 'https://soundcloud.com/sincopat/alberto-sola-sincopat-podcast-157',
+	history: false
 });
 
 
