@@ -59,7 +59,7 @@ Spectrogram.prototype.getColor = function (ratio) {
 	var right = cm.slice(Math.ceil(idx)*4, Math.ceil(idx)*4 + 4);
 	var amt = idx % 1;
 	var values = left.map((v,i) => (v * (1 - amt) + right[i] * amt)|0 );
-	return `rgba(${values.join(',')})`;
+	return values;
 }
 
 Spectrogram.prototype.draw = function (data) {
@@ -84,11 +84,17 @@ Spectrogram.prototype.draw = function (data) {
 	}
 
 	//put new slice
+	var imgData = ctx.getImageData(offset, this.viewport[1], 1, height);
+	var pixels = imgData.data;
+
 	for (var i = 0; i < height; i++) {
 		var ratio = i / height;
 		var amt = data[(this.f(ratio) * data.length)|0] / 255;
 		amt = clamp((amt * 100. - 100 - this.minDecibels) / (this.maxDecibels - this.minDecibels), 0, 1);
-		ctx.fillStyle = this.getColor(amt);
-		ctx.fillRect(offset, this.viewport[1] + height - i, 1, 1);
+		var values = this.getColor(amt);
+		values[3] *= 255;
+		pixels.set(values, (height - i - 1)*4);
 	}
+	ctx.putImageData(imgData, offset, 0);
+
 }
