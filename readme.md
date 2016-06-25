@@ -60,6 +60,10 @@ spectrogram.update(opts);
 //called when freqs being pushed
 spectrogram.on('push', magnitudes => {});
 spectrogram.on('update', magnitudes => {});
+
+//latest frequencies data in db
+spectrogram.magnitudes;
+spectrogram.peak;
 ```
 
 ## Related

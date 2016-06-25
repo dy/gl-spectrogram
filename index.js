@@ -79,7 +79,7 @@ Spectrogram.prototype.init = function () {
 				vec2 coord = gl_FragCoord.xy / viewport.zw;
 
 				//do not shift if there is a room for the data
-				if (count < viewport.z - padding) {
+				if (count < viewport.z - padding + 1.) {
 					vec3 color = texture2D(texture, coord).xyz;
 					float mixAmt = step(count, gl_FragCoord.x);
 					color = mix(color, texture2D(frequencies, vec2(coord.y,.5)).www, mixAmt);
