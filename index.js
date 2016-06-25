@@ -13,7 +13,7 @@ Spectrogram.prototype.init = function () {
 	var gl = this.gl;
 
 	//preset colormap texture
-	this.setTexture('colormap', {
+	this.setTexture('fill', {
 		unit: 3,
 		type: gl.UNSIGNED_BYTE,
 		filter: gl.LINEAR,
@@ -71,7 +71,7 @@ Spectrogram.prototype.init = function () {
 			uniform vec4 viewport;
 			uniform float count;
 
-			const float padding = 5.;
+			const float padding = 1.;
 
 			void main () {
 				vec2 one = vec2(1) / viewport.zw;
@@ -162,7 +162,7 @@ Spectrogram.prototype.frag = `
 	precision highp float;
 
 	uniform sampler2D texture;
-	uniform sampler2D colormap;
+	uniform sampler2D fill;
 	uniform vec4 viewport;
 	uniform float sampleRate;
 	uniform float maxFrequency;
@@ -203,6 +203,6 @@ Spectrogram.prototype.frag = `
 		vec2 coord = (gl_FragCoord.xy - viewport.xy) / viewport.zw;
 		float intensity = texture2D(texture, vec2(coord.x, f(coord.y))).x;
 		intensity = (intensity * 100. - minDecibels - 100.) / (maxDecibels - minDecibels);
-		gl_FragColor = vec4(vec3(texture2D(colormap, vec2(intensity, coord.y) )), 1);
+		gl_FragColor = vec4(vec3(texture2D(fill, vec2(intensity, coord.y) )), 1);
 	}
 `;

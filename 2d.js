@@ -53,7 +53,7 @@ Spectrogram.prototype.f = function (ratio) {
 
 //return color based on current palette
 Spectrogram.prototype.getColor = function (ratio) {
-	var cm = this.colormap;
+	var cm = this.fillData;
 	var idx = ratio*cm.length*.25;
 	var left = cm.slice(Math.floor(idx)*4, Math.floor(idx)*4 + 4);
 	var right = cm.slice(Math.ceil(idx)*4, Math.ceil(idx)*4 + 4);
