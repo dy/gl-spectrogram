@@ -49,6 +49,17 @@ spectrogram.push(data);
 setTimeout(() => {
 	spectrogram.push(getData(data));
 }, 100);
+
+//set data colormap or background
+spectrogram.setFill(colormap|color|pixels);
+spectrogram.setBackground(color|array);
+
+//update colors, grid view
+spectrogram.update(opts);
+
+//called when freqs being pushed
+spectrogram.on('push', magnitudes => {});
+spectrogram.on('update', magnitudes => {});
 ```
 
 ## Related
