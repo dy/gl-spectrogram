@@ -1,5 +1,5 @@
 var startApp = require('start-app');
-var Spectrogram = require('./2d');
+var Spectrogram = require('./');
 var db = require('decibels');
 var ft = require('fourier-transform');
 var ctx = require('audio-context');
@@ -31,7 +31,7 @@ palettes = palettes
 var speed = 100;
 
 //pick random palette
-var palette = palettes[(Math.random() * palettes.length)|0];
+var palette = palettes[0]//(Math.random() * palettes.length)|0];
 
 //analyser
 var source = null;
