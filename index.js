@@ -5,6 +5,7 @@
 
 var Spectrogram = require('./lib/core');
 var Component = require('gl-component');
+var clamp = require('mumath/clamp');
 
 module.exports = Spectrogram;
 
@@ -133,6 +134,9 @@ Spectrogram.prototype.init = function () {
 
 	//shift data on push
 	this.on('push', (magnitudes) => {
+		//map mags to 0..255 range limiting by db subrange
+		magnitudes = magnitudes.map((value) => clamp(255 * (1 + value / 100), 0, 255));
+
 		this.shiftComponent.setTexture('frequencies', magnitudes);
 
 		//update count

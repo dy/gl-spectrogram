@@ -1,5 +1,5 @@
 var startApp = require('start-app');
-var Spectrogram = require('./');
+var Spectrogram = require('./2d');
 var db = require('decibels');
 var ft = require('fourier-transform');
 var ctx = require('audio-context');

@@ -19,6 +19,9 @@ Spectrogram.prototype.init = function () {
 
 	//render only on pushes
 	this.on('push', (magnitudes) => {
+		//map mags to 0..255 range limiting by db subrange
+		magnitudes = magnitudes.map((value) => clamp(255 * (1 + value / 100), 0, 255));
+
 		this.render(magnitudes);
 		this.count++;
 	});
