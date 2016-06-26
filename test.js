@@ -36,7 +36,7 @@ var palette = palettes[0]//(Math.random() * palettes.length)|0];
 //analyser
 var source = null;
 var analyser = ctx.createAnalyser();
-analyser.frequencyBinCount = 4096;
+analyser.fftSize = 4096;
 analyser.smoothingTimeConstant = .1;
 analyser.connect(ctx.destination);
 

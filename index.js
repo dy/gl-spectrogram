@@ -159,7 +159,7 @@ Spectrogram.prototype.init = function () {
 };
 
 //background texture size
-Spectrogram.prototype.size = [1024, 1024];
+Spectrogram.prototype.size = [2048, 2048];
 
 //default renderer just outputs active texture
 Spectrogram.prototype.frag = `
