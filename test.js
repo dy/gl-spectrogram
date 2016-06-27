@@ -1,5 +1,5 @@
 var startApp = require('start-app');
-var Spectrogram = require('./');
+var Spectrogram = require('./2d');
 var db = require('decibels');
 var ft = require('fourier-transform');
 var ctx = require('audio-context');
@@ -68,7 +68,8 @@ var app = startApp({
 	color: palette[palette.length - 1],
 	// source: 'https://soundcloud.com/xlr8r/sets/xlr8r-top-10-downloads-of-may',
 	source: isMobile ? './sample.mp3' : 'https://soundcloud.com/sincopat/alberto-sola-sincopat-podcast-157',
-	history: false
+	history: false,
+	// autoplay: false
 });
 
 
@@ -76,12 +77,11 @@ var spectrogram = Spectrogram({
 	smoothing: .1,
 	fill: palette,
 	maxDecibels: 0,
-	minDecibels: -100
+	minDecibels: -100,
 	// logarithmic: false,
 	// autostart: false
 	// weighting:
 });
-
 
 app.addParams({
 	fill: {

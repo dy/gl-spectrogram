@@ -26,6 +26,7 @@ Spectrogram.prototype.init = function () {
 		this.count++;
 	});
 
+
 	//on color update
 	this.on('update', () => {
 		this.colorValues = parseColor(this.color).values;
@@ -57,13 +58,15 @@ Spectrogram.prototype.f = function (ratio) {
 //return color based on current palette
 Spectrogram.prototype.getColor = function (ratio) {
 	var cm = this.fillData;
-	var idx = ratio*cm.length*.25;
+	ratio = clamp(ratio, 0, 1);
+	var idx = ratio*(cm.length*.25 - 1);
+	var amt = idx % 1;
 	var left = cm.slice(Math.floor(idx)*4, Math.floor(idx)*4 + 4);
 	var right = cm.slice(Math.ceil(idx)*4, Math.ceil(idx)*4 + 4);
-	var amt = idx % 1;
 	var values = left.map((v,i) => (v * (1 - amt) + right[i] * amt)|0 );
 	return values;
 }
+
 
 Spectrogram.prototype.draw = function (data) {
 	var ctx = this.context;
@@ -93,7 +96,7 @@ Spectrogram.prototype.draw = function (data) {
 	for (var i = 0; i < height; i++) {
 		var ratio = i / height;
 		var amt = data[(this.f(ratio) * data.length)|0] / 255;
-		amt = clamp((amt * 100. - 100 - this.minDecibels) / (this.maxDecibels - this.minDecibels), 0, 1);
+		amt = (amt * 100. - 100 - this.minDecibels) / (this.maxDecibels - this.minDecibels);
 		var values = this.getColor(amt);
 		values[3] *= 255;
 		pixels.set(values, (height - i - 1)*4);

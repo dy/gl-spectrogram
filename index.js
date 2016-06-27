@@ -55,7 +55,7 @@ Spectrogram.prototype.init = function () {
 				width: size[0],
 				height: size[1]
 			},
-			frequencies: {
+			magnitudes: {
 				unit: 2,
 				data: null,
 				format: gl.ALPHA,
@@ -68,7 +68,7 @@ Spectrogram.prototype.init = function () {
 			precision highp float;
 
 			uniform sampler2D texture;
-			uniform sampler2D frequencies;
+			uniform sampler2D magnitudes;
 			uniform vec4 viewport;
 			uniform float count;
 
@@ -82,7 +82,7 @@ Spectrogram.prototype.init = function () {
 				if (count < viewport.z - padding + 1.) {
 					vec3 color = texture2D(texture, coord).xyz;
 					float mixAmt = step(count, gl_FragCoord.x);
-					color = mix(color, texture2D(frequencies, vec2(coord.y,.5)).www, mixAmt);
+					color = mix(color, texture2D(magnitudes, vec2(coord.y,.5)).www, mixAmt);
 					mixAmt *= (- count - padding + gl_FragCoord.x) / padding;
 					color = mix(color, vec3(0), mixAmt);
 					gl_FragColor = vec4(color, 1);
@@ -91,7 +91,7 @@ Spectrogram.prototype.init = function () {
 					coord.x += one.x;
 					vec3 color = texture2D(texture, coord).xyz;
 					float mixAmt = step(viewport.z - padding, gl_FragCoord.x);
-					color = mix(color, texture2D(frequencies, vec2(coord.y,.5)).www, mixAmt);
+					color = mix(color, texture2D(magnitudes, vec2(coord.y,.5)).www, mixAmt);
 					mixAmt *= (- viewport.z + gl_FragCoord.x) / padding;
 					color = mix(color, vec3(0), mixAmt);
 					gl_FragColor = vec4(color, 1);
@@ -137,7 +137,7 @@ Spectrogram.prototype.init = function () {
 		//map mags to 0..255 range limiting by db subrange
 		magnitudes = magnitudes.map((value) => clamp(255 * (1 + value / 100), 0, 255));
 
-		this.shiftComponent.setTexture('frequencies', magnitudes);
+		this.shiftComponent.setTexture('magnitudes', magnitudes);
 
 		//update count
 		this.shiftComponent.count++;
