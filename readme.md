@@ -1,4 +1,4 @@
-# gl-spectrogram [![unstable](http://badges.github.io/stability-badges/dist/unstable.svg)](http://github.com/badges/stability-badges)
+# gl-spectrogram [![experimental](http://badges.github.io/stability-badges/dist/experimental.svg)](http://github.com/badges/stability-badges)
 
 Render spectrogram in webgl or 2d.
 
