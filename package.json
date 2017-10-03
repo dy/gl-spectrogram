@@ -4,8 +4,7 @@
   "description": "Draw spectrogram with webgl or 2d-canvas",
   "main": "index.js",
   "scripts": {
-    "test": "budo test.js",
-    "test:browser": "budo test.js -- -g bubleify",
+    "start": "budo test.js",
     "build": "browserify test.js -g bubleify -o demo/index.js"
   },
   "browserify": {
@@ -32,7 +31,7 @@
   "devDependencies": {
     "audio-context": "^0.1.0",
     "buble": "^0.11.6",
-    "bubleify": "^0.3.1",
+    "bubleify": "^0.5.0",
     "budo": "^10.0.4",
     "decibels": "^1.0.1",
     "fourier-transform": "^1.0.2",
