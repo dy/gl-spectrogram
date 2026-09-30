@@ -1,55 +1,38 @@
 {
   "name": "gl-spectrogram",
-  "version": "1.1.8",
-  "description": "Draw spectrogram with webgl or 2d-canvas",
+  "version": "2.0.0",
+  "description": "WebGL2 spectrogram renderer: FFT on the GPU, reassigned to one-pixel lines, sharp at every zoom",
+  "type": "module",
   "main": "index.js",
-  "scripts": {
-    "test": "budo test.js",
-    "test:browser": "budo test.js -- -g bubleify",
-    "build": "browserify test.js -g bubleify -o demo/index.js"
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
   },
-  "browserify": {
-    "transform": [
-      "bubleify"
-    ]
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/audio-lab/gl-spectrogram.git"
-  },
-  "keywords": [
-    "audio",
-    "vis",
-    "canvas2d",
-    "webgl"
+  "files": [
+    "index.js",
+    "index.d.ts"
   ],
-  "author": "ΔY <dfcreative@gmail.com>",
+  "scripts": {
+    "test": "node test/index.js",
+    "bench": "node test/bench.js"
+  },
+  "repository": "audio-lab/gl-spectrogram",
+  "keywords": [
+    "spectrogram",
+    "webgl2",
+    "audio",
+    "fft",
+    "stft",
+    "reassignment",
+    "sonogram",
+    "data-vis"
+  ],
+  "author": "Dmitry Yv <dfcreative@gmail.com>",
   "license": "MIT",
-  "bugs": {
-    "url": "https://github.com/audio-lab/gl-spectrogram/issues"
-  },
-  "homepage": "https://github.com/audio-lab/gl-spectrogram#readme",
   "devDependencies": {
-    "audio-context": "^0.1.0",
-    "buble": "^0.11.6",
-    "bubleify": "^0.3.1",
-    "decibels": "^1.0.1",
-    "fourier-transform": "^1.0.2",
-    "is-mobile": "^0.2.2",
-    "nice-color-palettes": "^1.0.1",
-    "start-app": "^1.1.13"
-  },
-  "dependencies": {
-    "a-weighting": "^1.0.0",
-    "color-parse": "^1.1.1",
-    "color-space": "^1.14.3",
-    "colormap": "^2.2.0",
-    "flatten": "^1.0.2",
-    "gl-component": "^1.4.11",
-    "inherits": "^2.0.1",
-    "is-browser": "^2.0.1",
-    "mumath": "^2.2.1",
-    "plot-grid": "^1.1.11",
-    "xtend": "^4.0.1"
+    "playwright": "^1.63.0"
   }
 }
