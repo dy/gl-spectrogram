@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gl-spectrogram</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: oklch(0.16 0.01 255);
+    --lane: oklch(0.21 0 0);
+    --line: oklch(0.32 0.02 255);
+    --fg: oklch(0.92 0.01 255);
+    --dim: oklch(0.64 0.02 255);
+    --accent: oklch(0.76 0.12 235);
+    --rec: oklch(0.68 0.2 25);
+  }
+  * { box-sizing: border-box }
+  html, body { height: 100% }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.4 ui-sans-serif, system-ui, sans-serif; display: flex; flex-direction: column }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; padding: .75rem 1rem }
+  h1 { font-size: inherit; margin: 0 .25rem 0 0 }
+  nav { display: flex; flex-wrap: wrap; gap: .25rem }
+  button, label, select { font: inherit; color: inherit; background: none; border: 1px solid var(--line); border-radius: 4px; padding: .2rem .6rem; cursor: pointer }
+  button:hover, label:hover, select:hover { border-color: var(--dim) }
+  button:focus-visible, select:focus-visible, label:has(:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px }
+  label:has(:checked) { border-color: var(--rec); color: var(--rec) }
+  input[type=checkbox] { position: absolute; opacity: 0; pointer-events: none }
+  select option { background: var(--bg) }
+  output { color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap }
+  main { position: relative; flex: 1; min-height: 240px; margin: 0 1rem }
+  .lane { position: absolute; left: 0; background: var(--lane); border-radius: 3px }
+  canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100% }
+  #spec { touch-action: none; cursor: crosshair }
+  #spec.drag { cursor: grabbing }
+  #axes { pointer-events: none }
+  footer { padding: .6rem 1rem .8rem; color: var(--dim) }
+</style>
+
+<header>
+  <h1>gl-spectrogram</h1>
+  <nav>
+    <button data-go="all">Whole file</button>
+    <button data-go="voice">Voice</button>
+    <button data-go="sweep">Sweep</button>
+    <button data-go="chord">Chord</button>
+    <button data-go="clicks">Clicks</button>
+    <button data-go="band">80 Hz–1 kHz</button>
+  </nav>
+  <select id="scale" aria-label="Frequency scale"><option value="log">log</option><option value="mel">mel</option><option value="lin">lin</option></select>
+  <label><input type="checkbox" id="rec"> Record</label>
+  <output id="status">Generating…</output>
+  <output id="fps"></output>
+  <output id="readout"></output>
+</header>
+<main>
+  <div class="lane"></div>
+  <div class="lane"></div>
+  <canvas id="spec"></canvas>
+  <canvas id="axes"></canvas>
+</main>
+<footer><a href="./" style="color:inherit">Playground</a> · Wheel or pinch to zoom time at the pointer · Shift+wheel, or the wheel over the frequencies, zooms them · drag to pan · double-click for the whole file · <code>?minutes=60</code> for an hour</footer>
+
+<script type="module">
+import Spectrogram, { scales } from '../index.js'
+import voice from './voice.js'
+
+const SR = 48000, MINUTES = +new URLSearchParams(location.search).get('minutes') || 10, N = Math.round(MINUTES * 60 * SR)
+const $ = s => document.querySelector(s), css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim()
+const canvas = $('#spec'), axes = $('#axes'), ax = axes.getContext('2d'), laneBgs = document.querySelectorAll('.lane')
+const AXIS = 44, RULER = 20, GAP = 8
+
+// ── stereo speech with landmarks: a sweep, a chord, clicks ────────────
+
+const at = x => Math.round(x * N)
+const SWEEP = [at(.25), at(.25) + SR * 10], CHORD = [at(.5), at(.5) + SR * 8], CLICKS = [at(.75), at(.75) + SR * 2]
+
+let data
+try { data = [new Float32Array(N), new Float32Array(N)] }
+catch (e) { $('#status').value = `No memory for 2 × ${MINUTES} min: try ?minutes=5`; throw e }
+const voices = [voice(1), voice(2)]
+for (let a = 0; a < N; a += 1 << 23) {
+  let b = Math.min(a + (1 << 23), N)
+  voices.forEach((fill, c) => fill(data[c], a, b))
+  $('#status').value = `Generating ${Math.round(b / N * 100)}%`
+  await new Promise(requestAnimationFrame)
+}
+for (let d of data) {
+  // a log sweep from 20 Hz to 20 kHz
+  for (let i = SWEEP[0], ph = 0; i < SWEEP[1]; i++) { let t = (i - SWEEP[0]) / (SWEEP[1] - SWEEP[0]); ph += 2 * Math.PI * 20 * 1000 ** t / SR; d[i] = .5 * Math.sin(ph) }
+  // C major then A minor, seven decaying partials a note
+  for (let [k, notes] of [[0, [261.63, 329.63, 392]], [1, [220, 261.63, 329.63]]]) {
+    let a = CHORD[0] + k * SR * 4
+    for (let i = a; i < a + SR * 4; i++) { let t = (i - a) / SR, v = 0; for (let f of notes) for (let h = 1; h < 8; h++) v += .06 / h * Math.exp(-t * (.6 + h * .4)) * Math.sin(2 * Math.PI * f * h * t); d[i] = v }
+  }
+  // clicks every 50 ms, one sample each, in silence
+  d.fill(0, CLICKS[0], CLICKS[1])
+  for (let i = CLICKS[0]; i < CLICKS[1]; i += SR / 20) d[i] = .9
+}
+
+// ── spectrograms: two lanes on one canvas ─────────────────────────────
+
+const background = css('--lane'), lanes = [0, 1].map(() => new Spectrogram(canvas, { sampleRate: SR, background }))
+let t0 = performance.now()
+lanes.forEach((s, c) => s.update({ data: data[c] }))
+$('#status').value = `${MINUTES} min stereo at 48 kHz, 2 × ${(N / 1e6).toFixed(1)}M samples`
+
+let range = [0, N], band = null, scale = 'log', dirty = true, cssW = 1, laneH = 1, plotW = 1, first = true
+
+const resized = new ResizeObserver(([e]) => {
+  let box = e.devicePixelContentBoxSize?.[0], { width, height } = e.contentRect
+  canvas.width = box ? box.inlineSize : Math.round(width * devicePixelRatio)
+  canvas.height = box ? box.blockSize : Math.round(height * devicePixelRatio)
+  axes.width = canvas.width; axes.height = canvas.height
+  cssW = width; plotW = width - AXIS; laneH = (height - RULER - GAP) / 2
+  lanes.forEach((s, i) => {
+    let y = RULER + i * (laneH + GAP)
+    s.update({ viewport: [0, y, plotW, laneH], pixelRatio: canvas.width / width })
+    Object.assign(laneBgs[i].style, { top: y + 'px', height: laneH + 'px', width: plotW + 'px' })
+  })
+  dirty = true
+})
+try { resized.observe(canvas, { box: 'device-pixel-content-box' }) } catch { resized.observe(canvas) } // the former also reports DPR changes
+
+// ── view: time zoom at the pointer, frequency zoom, pan, landmarks ────
+
+const length = () => lanes[0].length
+const full = () => [scales[scale].low, SR / 2]
+const view = (a, b) => {
+  let span = Math.min(Math.max(b - a, plotW / 50), length() * 1.5), c = (a + b) / 2
+  if (span !== b - a) a = c - span / 2, b = c + span / 2
+  range = [a, b]; dirty = true
+}
+const zoom = (x, k) => { let s = range[0] + x / plotW * (range[1] - range[0]); view(s - (s - range[0]) * k, s + (range[1] - s) * k) }
+const pan = dx => { let d = dx / plotW * (range[1] - range[0]); view(range[0] + d, range[1] + d) }
+const around = (s, span) => view(s - span / 2, s + span / 2)
+// the band as 0..1 of the scale, zoomed around u; at least a 64th of it
+const zoomBand = (u, k) => {
+  let [lo, hi] = full(), S = scales[scale], [a, b] = (band ?? full()).map(f => S.at(f, lo, hi))
+  let w = Math.min(1, Math.max(1 / 64, (b - a) * k)), c = Math.max(0, Math.min(1 - w, u - (u - a) / (b - a) * w))
+  band = w >= 1 ? null : [S.of(c, lo, hi), S.of(c + w, lo, hi)]
+  dirty = true
+}
+const laneAt = y => [0, 1].find(i => y >= RULER + i * (laneH + GAP) && y < RULER + i * (laneH + GAP) + laneH)
+const uAt = (i, y) => { let top = RULER + i * (laneH + GAP), [lo, hi] = full(), S = scales[scale], [a, b] = (band ?? full()).map(f => S.at(f, lo, hi)); return a + (1 - (y - top) / laneH) * (b - a) }
+
+canvas.addEventListener('wheel', e => {
+  e.preventDefault()
+  let k = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? cssW : 1, i = laneAt(e.offsetY)
+  if (Math.abs(e.deltaX) > Math.abs(e.deltaY) && !e.shiftKey) pan(e.deltaX * k)
+  else if ((e.shiftKey || e.offsetX > plotW) && i != null) zoomBand(uAt(i, e.offsetY), Math.exp((e.deltaY || e.deltaX) * k * .003))
+  else zoom(e.offsetX, Math.exp(e.deltaY * k * (e.ctrlKey ? .01 : .002)))
+}, { passive: false })
+
+const pointers = new Map()
+canvas.addEventListener('pointerdown', e => { canvas.setPointerCapture(e.pointerId); pointers.set(e.pointerId, e.offsetX); canvas.classList.add('drag') })
+let hover = null
+canvas.addEventListener('pointerleave', () => { hover = null; $('#readout').value = '' })
+canvas.addEventListener('pointermove', e => {
+  hover = [e.offsetX, e.offsetY]
+  if (!pointers.has(e.pointerId)) return readout(...hover)
+  let prev = pointers.get(e.pointerId)
+  if (pointers.size === 1) pan(prev - e.offsetX)
+  else {
+    let other = [...pointers].find(([id]) => id !== e.pointerId)[1]
+    if (Math.abs(e.offsetX - other) > 10) zoom((e.offsetX + other) / 2, Math.abs(prev - other) / Math.abs(e.offsetX - other))
+  }
+  pointers.set(e.pointerId, e.offsetX)
+})
+for (let type of ['pointerup', 'pointercancel']) canvas.addEventListener(type, e => { pointers.delete(e.pointerId); if (!pointers.size) canvas.classList.remove('drag') })
+canvas.addEventListener('dblclick', () => { band = null; view(0, length()) })
+
+const GO = {
+  all: () => { band = null; view(0, length()) },
+  voice: () => { band = null; around(at(.1), SR * 3) },
+  sweep: () => { band = null; view(SWEEP[0] - SR, SWEEP[1] + SR) },
+  chord: () => { band = null; view(CHORD[0] - SR / 2, CHORD[1] + SR / 2) },
+  clicks: () => { band = null; view(CLICKS[0] - SR * .02, CLICKS[0] + SR * .18) },
+  band: () => { scale = $('#scale').value = 'log'; band = [80, 1000]; around(at(.1), SR * 3) }
+}
+for (let b of document.querySelectorAll('[data-go]')) b.addEventListener('click', () => { rec.checked = false; GO[b.dataset.go]() })
+$('#scale').addEventListener('change', e => { scale = e.target.value; band = null; dirty = true })
+
+// ── readout: pick() under the pointer ─────────────────────────────────
+
+const time = (t, digits = 3) => { let m = Math.floor(t / 60); return `${m}:${(t - m * 60).toFixed(digits).padStart(digits ? digits + 3 : 2, '0')}` }
+const hz = f => f >= 1000 ? (f / 1000).toFixed(f >= 10000 ? 1 : 2) + ' kHz' : f.toFixed(f >= 100 ? 0 : 1) + ' Hz'
+function readout(x, y) {
+  let i = laneAt(y), p = i != null && lanes[i].pick(x, y - (RULER + i * (laneH + GAP)))
+  $('#readout').value = !p ? '' : `${'LR'[i]} ${time(p.from / SR, 4)} · ${hz(p.low)}–${hz(p.high)} · ${p.level > -200 ? p.level.toFixed(1) + ' dB' : 'silence'}`
+}
+
+// ── recording: the voices go on, pushed as they arrive; the view follows the end ──
+
+const rec = $('#rec')
+let last = 0
+rec.addEventListener('change', () => { last = performance.now(); if (rec.checked) view(length() - SR * 8, length() + SR * 2) })
+function record(now) {
+  let k = Math.round(SR * Math.min((now - last) / 1000, .1))
+  last = now
+  if (!k) return
+  let follow = range[1] >= length()
+  lanes.forEach((s, c) => { let block = new Float32Array(k); voices[c](block, 0, k); s.push(block) })
+  if (follow) range = [range[0] + k, range[1] + k]
+  dirty = true
+}
+
+// ── axes: time on top, frequencies at the right ───────────────────────
+
+const STEPS = [1e-5, 2e-5, 5e-5, 1e-4, 2e-4, 5e-4, .001, .002, .005, .01, .02, .05, .1, .2, .5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600]
+const MARKS = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
+function drawAxes() {
+  let pr = axes.width / cssW, [a, b] = range, step = STEPS.find(s => s * SR / (b - a) * plotW >= 90) ?? 3600
+  ax.setTransform(pr, 0, 0, pr, 0, 0)
+  ax.clearRect(0, 0, cssW, axes.height / pr)
+  ax.fillStyle = css('--dim')
+  ax.font = '11px ui-sans-serif, system-ui, sans-serif'
+  for (let k = Math.ceil(a / SR / step); k * step * SR <= b; k++) {
+    let x = (k * step * SR - a) / (b - a) * plotW
+    ax.fillRect(Math.round(x), RULER - 5, 1, 5)
+    ax.fillText(time(k * step, Math.max(0, Math.ceil(-Math.log10(step)))), Math.round(x) + 4, RULER - 7)
+  }
+  let [lo, hi] = full(), S = scales[scale], [u0, u1] = (band ?? full()).map(f => S.at(f, lo, hi))
+  for (let i = 0; i < 2; i++) {
+    let top = RULER + i * (laneH + GAP), prev = -Infinity
+    for (let f of [...MARKS].sort((p, q) => q - p)) {
+      if (f < lo || f > hi) continue
+      let u = (S.at(f, lo, hi) - u0) / (u1 - u0), y = top + (1 - u) * laneH
+      if (u < 0 || u > 1 || Math.abs(y - prev) < 14) continue
+      prev = y
+      ax.fillRect(plotW, Math.round(y), 4, 1)
+      ax.fillText(f >= 1000 ? f / 1000 + 'k' : f, plotW + 7, Math.min(Math.max(y + 4, top + 10), top + laneH))
+    }
+  }
+}
+
+// ── frame loop: draw when something changed, or while columns still take frames ──
+
+let times = [], cost = 0
+requestAnimationFrame(function frame(now) {
+  requestAnimationFrame(frame)
+  if (rec.checked) record(now)
+  if (!dirty && !lanes.some(s => s.pending)) return
+  dirty = false
+  let t = performance.now()
+  for (let s of lanes) s.update({ range, band, scale }).clear().render()
+  drawAxes()
+  if (hover) readout(...hover)
+  if (first) { first = false; $('#status').value += `, first picture in ${Math.round(performance.now() - t0)} ms` }
+  cost = cost * .9 + (performance.now() - t) * .1
+  times.push(now)
+  while (times[0] < now - 1000) times.shift()
+  let spp = (range[1] - range[0]) / (plotW * canvas.width / cssW), fps = times.length >= 10 ? `${times.length} fps · ` : ''
+  $('#fps').value = `${fps}${cost.toFixed(1)} ms/frame (CPU) · FFT ${lanes[0].size} · ${spp >= 1 ? spp.toFixed(spp < 10 ? 1 : 0) + ' samples/px' : (1 / spp).toFixed(1) + ' px/sample'}${lanes.some(s => s.pending) ? ' · refining' : ''}`
+})
+</script>

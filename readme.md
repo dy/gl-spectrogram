@@ -2,9 +2,13 @@
 
 WebGL2 spectrogram renderer for audio editors. Each render computes what the view shows on the GPU: an FFT frame per device-pixel column, reassigned, so a steady tone draws one pixel row thin and a click one pixel column thin. Zooms, pans and frequency zooms draw sharp in the frame they happen, over an hour of 48 kHz audio.
 
-<img src="example/preview.png" width="968" alt="Two lanes of synthetic speech and chords, 0:59 to 1:15: speech harmonics as short gliding lines, two chords as thin horizontal partials fading out">
+<img src="example/preview.png" width="968" alt="Harmonic signals in the lagoon palette, with frequency, color and level settings">
 
-Demo: [`example/`](example/index.html), two lanes of synthetic speech with a sweep, chords and clicks. Zoom time and frequency, pan, record.
+[Playground](https://dy.github.io/gl-spectrogram/example/): synthetic harmonics, voice, sweeps, chords, clicks and noise, or open a local audio file. Play and seek with the audio controls, inspect frequency and level under the pointer, or stream a generated signal. Adjust palettes and their direction, log/mel/linear scales, frequency limits, FFT size, gain, automatic depth or explicit dB limits. Sound starts only when you press play.
+
+Wheel or pinch to zoom time, drag to pan, Shift+wheel to zoom frequencies. Arrow keys pan, +/− zoom, Home fits the audio; **Voice band** focuses on 80–4,000 Hz. The current API computes the FFT from samples, so the controls expose its actual options rather than the old magnitude-frame smoothing and weighting settings.
+
+[Audio stress test](https://dy.github.io/gl-spectrogram/example/stress.html): stereo speech with sweep, chord and click landmarks. `?minutes=60` makes an hour.
 
 ## Usage
 
@@ -130,7 +134,7 @@ v1 drew magnitude frames pushed to it one at a time, scrolling. v2 computes the 
 
 * `npm test`: every cell of 20 views against a CPU reference in doubles (three FFTs a frame, the reassignment formulas as written), within 0.01 dB, over log, mel and lin scales, zoomed bands, FFT sizes 256 to 2048, refined zoomed-out columns, offset 10⁹ and DPR 2; a full-scale sine on the row each scale's formula gives at 0 dB; a click on its column from 0.3 to 2880 samples per px; pans, `push()`/`set()` and refinement against fresh views; previews, levels, gaps, the color ramp's lightness, colormaps, half floats, stale texture layers, context loss, an hour of audio and the API contract. Headless Chromium through Playwright; `npx playwright install chromium` if it is missing.
 * `npm run bench`: the table above.
-* Demo: any static server at the repo root, e.g. `npx serve`, then open `/example/`. `?minutes=60` makes an hour.
+* Demo: any static server at the repo root, e.g. `npx serve`, then open `/example/`. The previous large-audio demo is at `/example/stress.html`; `?minutes=60` makes an hour.
 
 ## License
 

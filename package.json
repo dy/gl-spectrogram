@@ -16,10 +16,10 @@
     "index.d.ts"
   ],
   "scripts": {
-    "test": "node test/index.js",
+    "test": "node --test --test-concurrency=1 test/index.js test/demo.js",
     "bench": "node test/bench.js"
   },
-  "repository": "audio-lab/gl-spectrogram",
+  "repository": "dy/gl-spectrogram",
   "keywords": [
     "spectrogram",
     "webgl2",
