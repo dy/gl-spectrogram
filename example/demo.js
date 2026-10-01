@@ -4,6 +4,7 @@ import { $, css, num, clamp, error, frame, step, label, setup, decode } from './
 
 const canvas = $('chart'), ax = $('axes').getContext('2d'), grid = $('grid').getContext('2d'), player = $('player')
 const LEFT = 52, TOP = 30, GAP = 24
+let frames = [], reported = 0
 let lanes = [], range = [0, 1], band = [20, 24000], levels = null, scale = 'log', rate = 48000, title = '', gen
 let w = 1, h = 1, pw = 1, lh = 1, pr = 1, dirty = true, paint = true, running = false, last = 0, task = 0, url
 const length = () => lanes[0]?.length || 1
@@ -28,9 +29,9 @@ function layout() {
   dirty = true
 }
 function stop() { running = false; $('stream').textContent = 'Stream'; $('stream').setAttribute('aria-pressed', 'false') }
-function status() { $('status').value = `${title} · ${label(length() / rate)} s · ${rate / 1000} kHz · ${lanes.length === 1 ? 'mono' : lanes.length + ' channels'}` }
-function releaseAudio() { player.pause(); player.removeAttribute('src'); player.load(); player.hidden = true; $('playhead').hidden = true; if (url) URL.revokeObjectURL(url); url = null }
-function audio(blob) { releaseAudio(); url = URL.createObjectURL(blob); player.src = url; player.hidden = false }
+function status() { $('status').value = `${title}  ${label(length() / rate)} s  ${rate / 1000} kHz  ${lanes.length === 1 ? 'mono' : lanes.length + ' channels'}` }
+function releaseAudio() { $('play').disabled = true; $('seek').disabled = true; player.pause(); player.removeAttribute('src'); player.load(); player.hidden = true; $('playhead').hidden = true; if (url) URL.revokeObjectURL(url); url = null }
+function audio(blob) { releaseAudio(); url = URL.createObjectURL(blob); player.src = url; $('play').disabled = false; $('seek').disabled = false; $('seek').value = 0 }
 function wav(data, sr) {
   const bytes = new ArrayBuffer(44 + data.length * 2), v = new DataView(bytes)
   const str = (at, s) => [...s].forEach((c, i) => v.setUint8(at + i, c.charCodeAt(0)))
@@ -55,7 +56,7 @@ function install(data, sr, heading) {
 async function generate() {
   const id = ++task, source = $('source').value
   if (source === 'file') return
-  stop(); releaseAudio(); $('status').value = 'Generating…'
+  stop(); releaseAudio(); $('stream').disabled = true; $('status').value = 'Generating…'
   try {
     const sr = 48000, n = num('duration') * sr, nextGen = generator(source, sr), data = new Float32Array(n)
     for (let a = 0; a < n; a += 262144) {
@@ -106,7 +107,7 @@ function axes() {
 function inspect(x, y) {
   const i = Math.floor((y - TOP) / (lh + GAP)), local = y - TOP - i * (lh + GAP)
   const p = i >= 0 && i < lanes.length && x >= LEFT && x < LEFT + pw && local <= lh ? lanes[i].pick(x - LEFT, local) : null
-  $('readout').value = p ? `${label(p.from / rate)} s · ${label(p.low)}–${label(p.high)} Hz · ${Number.isFinite(p.level) ? p.level.toFixed(1) + ' dB' : 'silence'}` : 'Move over the spectrum to inspect a frequency.'
+  $('readout').value = p ? `${label(p.from / rate)} s  ${label(p.low)}–${label(p.high)} Hz  ${Number.isFinite(p.level) ? p.level.toFixed(1) + ' dB' : 'silence'}` : ''
 }
 setup({ resize: (width, height, ratio) => { w = width; h = height; pr = ratio; layout() }, zoom,
   pan: dx => { const d = dx / pw * (range[1] - range[0]); view(range[0] + d, range[1] + d, true) }, fit, inspect,
@@ -124,7 +125,7 @@ $('duration').onchange = generate
 $('voice-band').onclick = () => { scale = $('scale').value = 'log'; setBand(80, Math.min(4000, rate / 2)); view(range[0], range[0] + Math.min(length(), rate * 3)) }
 $('stream').onclick = () => {
   if (running) return stop()
-  releaseAudio(); running = true; last = performance.now(); $('stream').textContent = 'Pause'; $('stream').setAttribute('aria-pressed', 'true')
+  releaseAudio(); running = true; frames = []; reported = 0; last = performance.now(); $('stream').textContent = 'Pause'; $('stream').setAttribute('aria-pressed', 'true')
   if ($('follow').checked) view(Math.max(0, length() - rate * 8), length())
 }
 $('controls').oninput = e => {
@@ -138,7 +139,7 @@ $('controls').oninput = e => {
   levels = $('auto').checked ? null : [num('floor'), num('ceiling')]
   error(''); paint = dirty = true
 }
-$('controls').onreset = () => queueMicrotask(() => { $('source').value = 'tones'; scale = 'log'; levels = null; generate() })
+$('controls').onreset = () => queueMicrotask(() => { $('source').value = 'ensemble'; scale = 'log'; levels = null; generate() })
 $('file').onchange = async () => {
   const file = $('file').files[0]; if (!file) return
   const id = ++task; stop(); player.pause(); $('status').value = `Opening ${file.name}…`
@@ -152,28 +153,42 @@ $('file').onchange = async () => {
   finally { $('file').value = '' }
 }
 player.addEventListener('error', () => { if (player.getAttribute('src')) error('The browser cannot play this audio file.') })
+$('play').onclick = () => player.paused ? player.play().catch(e => error(e.message)) : player.pause()
+for (const event of ['play', 'pause', 'ended']) player.addEventListener(event, () => {
+  $('play').textContent = player.paused ? 'Play' : 'Pause'
+  $('play').setAttribute('aria-label', player.paused ? 'Play sample' : 'Pause sample')
+})
+player.addEventListener('timeupdate', () => { if (Number.isFinite(player.duration)) $('seek').value = player.currentTime / player.duration * 1000 })
+$('seek').oninput = () => { if (Number.isFinite(player.duration)) player.currentTime = num('seek') / 1000 * player.duration }
 window.addEventListener('pagehide', releaseAudio)
 requestAnimationFrame(function draw(now) {
   requestAnimationFrame(draw)
-  if (running && now - last >= 50) {
+  if (running && now - last >= 1000 / 60 - 1) {
     const n = Math.round(rate * Math.min((now - last) / 1000, .2) * num('speed')); last = now
     if (length() + n > rate * 300) { stop(); error('Five minutes captured. Choose a source to start a new stream.') }
-    else { lanes[0].push(gen(n)); if ($('follow').checked) range = range.map(v => v + n); dirty = true; status() }
+    else { lanes[0].push(gen(n)); if ($('follow').checked) range = range.map(v => v + n); dirty = true }
   }
-  if (!player.hidden && lanes.length) {
+  if (url && lanes.length) {
     const pos = player.currentTime * rate, span = range[1] - range[0]
     if (!player.paused && $('follow').checked && (pos > range[1] || pos < range[0])) view(pos, pos + span)
     const x = LEFT + (pos - range[0]) / span * pw
-    $('playhead').hidden = x < LEFT || x > LEFT + pw; $('playhead').style.left = x + 'px'
+    $('playhead').hidden = player.paused || x < LEFT || x > LEFT + pw; $('playhead').style.left = x + 'px'
   }
   if (!lanes.length || (!dirty && !lanes.some(s => s.pending))) return
   dirty = false; const start = performance.now()
   try {
     if (paint) { appearance(); paint = false }
     for (const s of lanes) s.update({ range, band, scale }).clear().render()
-    axes(); const levels = lanes[0].levels
-    $('floor-label').value = `${Math.round(levels[0])} dB`; $('top-label').value = `${Math.round(levels[1])} dB`
-    $('perf').value = `${(performance.now() - start).toFixed(1)} ms/frame (CPU) · FFT ${lanes[0].size}${lanes.some(s => s.pending) ? ' · refining' : ''}`
+    axes()
+    frames.push(now); while (frames[0] < now - 1000) frames.shift()
+    if (!running || now - reported >= 250) {
+      const levels = lanes[0].levels
+      $('floor-label').value = `${Math.round(levels[0])} dB`; $('top-label').value = `${Math.round(levels[1])} dB`
+      const fps = frames.length > 1 ? Math.round((frames.length - 1) * 1000 / (now - frames[0])) : 0
+      $('perf').value = `${running ? `${fps} fps  ` : ''}${(performance.now() - start).toFixed(1)} ms/frame  FFT ${lanes[0].size}${lanes.some(s => s.pending) ? '  refining' : ''}`
+      $('perf').title = 'CPU render time; excludes GPU completion.'
+      status(); reported = now
+    }
   } catch (e) { stop(); error(e.message) }
 })
 await generate()

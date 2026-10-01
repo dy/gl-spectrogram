@@ -3,26 +3,33 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="Explore sound in time and frequency with gl-spectrogram.">
-<title>gl-spectrogram · playground</title>
+<title>gl-spectrogram</title>
 <link rel="stylesheet" href="./style.css">
+<body class="spectrogram">
 <header>
-  <div class="identity"><h1>gl-spectrogram</h1><span>Sound, in time and frequency.</span></div>
-  <nav aria-label="Audio controls">
-    <select id="source" aria-label="Source"><option value="tones">Harmonics</option><option value="voice">Synthetic voice</option><option value="sweep">Frequency sweep</option><option value="chord">Chords</option><option value="clicks">Clicks</option><option value="noise">Noise</option><option value="file" hidden>Audio file</option></select>
-    <button id="open">Open audio</button><input id="file" type="file" accept="audio/*" hidden>
-    <button id="stream" aria-pressed="false">Stream</button>
-    <button id="settings" aria-expanded="true" aria-controls="panel">Settings</button>
+  <h1><a href="https://github.com/dy/gl-spectrogram">gl-spectrogram</a></h1>
+  <nav aria-label="Source">
+    <select id="source" aria-label="Source"><option value="ensemble">Plucked strings &amp; percussion</option><option value="birds">Birdsong</option><option value="voice">Synthetic voice</option><option value="sweep">Frequency sweep</option><option value="chord">Chords</option><option value="tones">Harmonics</option><option value="clicks">Clicks</option><option value="noise">Noise</option><option value="file" hidden>Audio file</option></select>
+    <button id="play" aria-label="Play sample" disabled>Play</button><button id="open">Open audio</button><input id="file" type="file" accept="audio/*" hidden>
+    <button id="stream" aria-pressed="false" disabled>Stream</button>
   </nav>
+  <output id="perf"></output>
+  <button id="settings" aria-expanded="false" aria-controls="panel">Settings</button>
 </header>
-<div class="workspace">
-  <main>
-    <div class="plot" id="plot"><canvas id="chart" tabindex="0" aria-label="Spectrogram. Arrow keys pan, plus and minus zoom time, Home fits the view. Shift and wheel zoom frequency."></canvas><canvas id="grid" aria-hidden="true"></canvas><canvas id="axes" aria-hidden="true"></canvas><div id="playhead" hidden></div></div>
-    <audio id="player" controls hidden aria-label="Audio playback"></audio>
-    <div class="viewbar"><button id="fit">Fit audio</button><button id="zoom-in" aria-label="Zoom in">+</button><button id="zoom-out" aria-label="Zoom out">−</button><button id="voice-band">Voice band</button><output id="view"></output></div>
-    <output id="readout" class="readout">Move over the spectrum to inspect a frequency.</output>
-    <p id="error" role="alert" hidden></p>
-  </main>
-  <aside id="panel" aria-label="Settings"><form id="controls">
+<main>
+  <div class="plot" id="plot"><canvas id="chart" tabindex="0" aria-label="Spectrogram: drag to pan, wheel or pinch to zoom, Shift and wheel to zoom frequency, Home to fit."></canvas><canvas id="grid" aria-hidden="true"></canvas><canvas id="axes" aria-hidden="true"></canvas><div id="playhead" hidden></div></div>
+  <audio id="player" preload="auto" hidden></audio><input id="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Playback position" disabled>
+  <p id="error" role="alert" hidden></p>
+</main>
+<footer>
+  <nav aria-label="View"><button id="fit">Fit</button><button id="voice-band">Voice band</button><button id="zoom-in" aria-label="Zoom in">+</button><button id="zoom-out" aria-label="Zoom out">−</button></nav>
+  <output id="status" role="status">Generating…</output>
+  <output id="readout"></output>
+  <output id="view" hidden></output>
+</footer>
+<aside id="panel" aria-label="Settings" hidden>
+  <button id="close-settings" aria-label="Close settings">×</button>
+  <form id="controls">
     <fieldset><legend>Color</legend>
       <label>Palette<select id="palette"><option value="lagoon">Lagoon</option><option value="inferno">Inferno</option><option value="viridis">Viridis</option><option value="gray">Grayscale</option><option value="custom">Single color</option></select></label>
       <label id="tint-row" hidden>Color<input id="tint" type="color" value="#b9eee5"></label>
@@ -32,27 +39,26 @@
     </fieldset>
     <fieldset><legend>Frequency</legend>
       <label>Scale<select id="scale"><option value="log">Logarithmic</option><option value="mel">Mel</option><option value="lin">Linear</option></select></label>
-      <div class="pair"><label>Low · Hz<input id="low" type="number" min="20" max="23999" step="any" value="20"></label><label>High · Hz<input id="high" type="number" min="21" max="24000" step="any" value="24000"></label></div>
+      <div class="pair"><label>Low  Hz<input id="low" type="number" min="20" max="23999" step="any" value="20"></label><label>High  Hz<input id="high" type="number" min="21" max="24000" step="any" value="24000"></label></div>
       <label>FFT size<select id="fft"><option value="0">Auto</option><option>256</option><option>512</option><option>1024</option><option>2048</option><option>4096</option><option>8192</option><option>16384</option></select></label>
     </fieldset>
     <fieldset><legend>Levels</legend>
       <label class="check"><input id="auto" type="checkbox" checked>Auto levels</label>
       <label id="depth-row">Range <output id="depth-value">80 dB</output><input id="depth" type="range" min="20" max="120" step="5" value="80"></label>
-      <div id="manual" class="pair" hidden><label>Floor · dB<input id="floor" type="number" min="-180" max="19" value="-80"></label><label>Ceiling · dB<input id="ceiling" type="number" min="-179" max="20" value="0"></label></div>
+      <div id="manual" class="pair" hidden><label>Floor  dB<input id="floor" type="number" min="-180" max="19" value="-80"></label><label>Ceiling  dB<input id="ceiling" type="number" min="-179" max="20" value="0"></label></div>
       <label>Gain <output id="gain-value">0 dB</output><input id="gain" type="range" min="-40" max="40" step="1" value="0"></label>
     </fieldset>
     <fieldset><legend>View</legend>
       <label class="check"><input id="grid-on" type="checkbox" checked>Grid</label>
       <label class="check"><input id="follow" type="checkbox" checked>Follow playback / stream</label>
-      <label id="duration-row">Duration<select id="duration"><option value="3">3 seconds</option><option value="12" selected>12 seconds</option><option value="60">1 minute</option></select></label>
-      <label id="speed-row">Stream speed<select id="speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
+      <label id="duration-row">Duration<select id="duration"><option value="3">3 seconds</option><option value="12">12 seconds</option><option value="24" selected>24 seconds</option><option value="60">1 minute</option></select></label>
+      <label id="speed-row">Stream speed<select id="speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option><option value="16">16×</option></select></label>
     </fieldset>
     <button type="reset" class="reset">Reset settings</button>
-  </form></aside>
-</div>
-<footer><output id="status" role="status">Loading…</output><output id="perf"></output><a href="./stress.html">Audio stress test</a><a href="https://github.com/dy/gl-spectrogram">Source ↗</a></footer>
+  </form>
+</aside>
 <script type="module">
-if (new URLSearchParams(location.search).has('minutes')) location.replace('./stress.html' + location.search)
-else import('./demo.js').catch(e => { const error = document.getElementById('error'); error.hidden = false; error.textContent = e.message })
+import('./demo.js').catch(e => { const error = document.getElementById('error'); error.hidden = false; error.textContent = e.message })
 </script>
+</body>
 </html>
