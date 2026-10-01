@@ -30,7 +30,7 @@ function layout() {
 }
 function stop() { running = false; $('stream').textContent = 'Stream'; $('stream').setAttribute('aria-pressed', 'false') }
 function status() { $('status').value = `${title}  ${label(length() / rate)} s  ${rate / 1000} kHz  ${lanes.length === 1 ? 'mono' : lanes.length + ' channels'}` }
-function releaseAudio() { $('play').disabled = true; $('seek').disabled = true; player.pause(); player.removeAttribute('src'); player.load(); player.hidden = true; $('playhead').hidden = true; if (url) URL.revokeObjectURL(url); url = null }
+function releaseAudio() { $('play').textContent = 'Play'; $('play').setAttribute('aria-label', 'Play sample'); $('play').disabled = true; $('seek').disabled = true; player.pause(); player.removeAttribute('src'); player.load(); player.hidden = true; $('playhead').hidden = true; if (url) URL.revokeObjectURL(url); url = null }
 function audio(blob) { releaseAudio(); url = URL.createObjectURL(blob); player.src = url; $('play').disabled = false; $('seek').disabled = false; $('seek').value = 0 }
 function wav(data, sr) {
   const bytes = new ArrayBuffer(44 + data.length * 2), v = new DataView(bytes)
