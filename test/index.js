@@ -29,9 +29,10 @@ test('cells: log scale, 0.2 to 450 samples per px, frames refined past 128, with
   assert.ok(res.cells > 10000, `cells compared: ${res.cells}`)
 })
 
-test('cells: mel and lin scales, zoomed bands, other FFT sizes', async () => {
+test('cells: mel, erb and lin scales, zoomed bands, other FFT sizes', async () => {
   let list = [
     { range: [2000, 8000], scale: 'mel' },
+    { range: [2000, 8000], scale: 'erb' },
     { range: [2000, 8000], scale: 'lin' },
     { range: [4000, 12000], band: [700, 1500] },
     { range: [4000, 12000], scale: 'lin', band: [2500, 4500] },
@@ -48,6 +49,32 @@ test('cells: samples at offset 1e9 draw as they do at 0', async () => {
 
 test('cells: device pixel ratio 2', async () => {
   clean(await run('views', { seed: 4, pr: 2, list: [{ range: [5000, 7000] }, { range: [0, 24000], scale: 'mel' }] }))
+})
+
+// The other methods, each against its own reference: zoomed in to a sample a column, on every scale, zoomed bands, the
+// whole, and refined zoomed out (450 samples a column, 5 frames each)
+const methodViews = [
+  { range: [1000, 1160] },
+  { range: [2000, 8000] },
+  { range: [2000, 8000], scale: 'mel' },
+  { range: [4000, 12000], scale: 'erb', band: [700, 1500] },
+  { range: [100, 23900], scale: 'lin', band: [0, 5000] },
+  { range: [0, 24000], scale: 'erb' },
+  { range: [-24000, 48000], size: 256 }
+]
+for (let method of ['frames', 'synchrosqueezed', 'bands', 'tapers'])
+  test(`cells: ${method}, within 0.01 dB of the reference in doubles`, async () => {
+    let res = await run('views', { seed: 6, method, list: methodViews })
+    clean(res)
+    assert.ok(res.cells > 20000, `cells compared: ${res.cells}`)
+  })
+
+// Wigner–Ville is bilinear: its level is the FFT's value itself, not a square of it, so float32's error, about 1e-7 of
+// the loudest cell, reaches 0.01 dB 30 dB below it, where the other methods' reaches it 60 dB below
+test('cells: wigner, within 0.01 dB of the reference in doubles where within 30 dB of the loudest', async () => {
+  let res = await run('views', { seed: 6, method: 'wigner', depth: 30, list: methodViews })
+  clean(res)
+  assert.equal(res.moved, 0, 'nothing moves: a row reads its spectrum')
 })
 
 // ── placement ─────────────────────────────────────────────────────────
@@ -73,6 +100,25 @@ test('sine: amplitude 0.1 reads -20 dB, also at 440 Hz and 15 kHz, on a zoomed b
   }
 })
 
+// A sine on a bin of every method's grid, 1007.8125 Hz (bin 43 of 2048 at 48 kHz, 86 of the 4096 that tapers pad to and
+// that Wigner–Ville's analytic signal spans): at 0 dB within 0.01 for the methods that read a spectrum, within 1 where
+// reassignment gathers it; on the row each scale's formula gives. Between bins, Hann frames lose up to 1.42 dB (its
+// scalloping loss, Harris 1978, table 1), tapers' flat top under 0.2.
+test('sine: every method on every scale, a full-scale sine on its row at 0 dB', async () => {
+  for (let method of ['frames', 'reassigned', 'synchrosqueezed', 'bands', 'tapers', 'wigner']) for (let scale of ['log', 'mel', 'erb', 'lin']) {
+    let r = await run('sine', { scale, method, f: 1007.8125 }), want = Math.floor(r.u), near = Math.abs(r.u - Math.round(r.u)) < .01
+    let gathers = !['reassigned', 'synchrosqueezed'].includes(method), off = gathers ? .01 : 1
+    assert.equal(r.size, 2048, `${method}, ${scale}: FFT size`)
+    for (let row of r.rows) assert.ok(row === want || near && Math.abs(row - r.u) < 1, `${method}, ${scale}: row ${row}, the formula gives ${r.u}`)
+    for (let v of r.levels) assert.ok(Math.abs(v) < off, `${method}, ${scale}: ${v} dB`)
+    if (!gathers) for (let v of r.next) assert.ok(v < -40, `${method}, ${scale}: a neighbouring row reads ${v} dB`)
+  }
+  for (let [method, low] of [['frames', -1.43], ['bands', -1.43], ['tapers', -.2]]) {
+    let r = await run('sine', { scale: 'lin', method, f: 1000 + 23.4375 / 2 })
+    for (let v of r.levels) assert.ok(v > low && v < .01, `${method}, half a bin off: ${v} dB`)
+  }
+})
+
 test('click: one sample lands on the column holding it, at 0.3 to 2880 samples per px', async () => {
   // past 256 samples a column, frames of 512 sample it at first; renders while pending add frames till all are in one
   let res = await run('click', { k: 48000 + 777, spans: [60, 200, 2000, 30000, 51200, 96000 * 6] })
@@ -83,16 +129,30 @@ test('click: one sample lands on the column holding it, at 0.3 to 2880 samples p
   }
 })
 
+// The click on its column by every other method too, each frame in its own column: the loudest the one centered
+// nearest it under Hann or the lag window. Three sine tapers squared sum to 3/2 − ½ Σ cos(2πjn/L), 2 at the frame's
+// center and 2.16 at n = .21 L: a click reads 0.33 dB louder through frames holding it off center, so its own column is
+// within half a dB of the loudest.
+test('click: by every method, on the column holding it', async () => {
+  for (let method of ['frames', 'synchrosqueezed', 'bands', 'tapers', 'wigner']) {
+    let res = await run('click', { k: 48000 + 777, spans: [60, 200, 2000, 30000], method })
+    for (let r of res) {
+      if (method === 'tapers') assert.ok(r.own > r.peak - .5, `tapers, span ${r.span}: its column ${r.own} dB, the loudest ${r.peak} dB`)
+      else assert.ok(r.holds, `${method}, span ${r.span}: the loudest column holds samples [${r.from}, ${r.to})`)
+    }
+  }
+})
+
 test('scales: the exported axes are the REPL\'s', async () => {
   let r = await page.evaluate(async () => {
     let { scales, at } = await import('/test/page.js'), out = []
-    for (let s of ['log', 'mel', 'lin']) for (let f of [20, 100, 1000, 5000, 20000]) {
+    for (let s of ['log', 'mel', 'erb', 'lin']) for (let f of [20, 100, 1000, 5000, 20000]) {
       let lo = s === 'log' ? 20 : 0
       out.push([s, f, scales[s].at(f, lo, 24000), at(s, f, lo, 24000), scales[s].of(scales[s].at(f, lo, 24000), lo, 24000)])
     }
-    return { out, low: [scales.log.low, scales.mel.low, scales.lin.low] }
+    return { out, low: [scales.log.low, scales.mel.low, scales.erb.low, scales.lin.low] }
   })
-  assert.deepEqual(r.low, [20, 0, 0])
+  assert.deepEqual(r.low, [20, 0, 0, 0])
   for (let [s, f, got, want, back] of r.out) {
     assert.ok(Math.abs(got - want) < 1e-12, `${s} ${f} Hz: ${got} vs ${want}`)
     assert.ok(Math.abs(back - f) < 1e-9 * f + 1e-9, `${s}: of(at(${f})) = ${back}`)
@@ -102,10 +162,12 @@ test('scales: the exported axes are the REPL\'s', async () => {
 // ── consistency ───────────────────────────────────────────────────────
 
 test('pans: cached columns plus new ones draw what a fresh view draws; an unchanged view computes nothing', async () => {
-  let r = await run('pans')
-  assert.ok(r.worst < .01, `largest difference ${r.worst} dB`)
-  assert.ok(r.runs > 0, 'pans computed new columns')
-  assert.equal(r.again, 1, 'a view already computed is one draw')
+  for (let method of [null, 'synchrosqueezed', 'bands', 'wigner']) {
+    let r = await run('pans', { method })
+    assert.ok(r.worst < .01, `${method}: largest difference ${r.worst} dB`)
+    assert.ok(r.runs > 0, `${method}: pans computed new columns`)
+    assert.equal(r.again, 1, `${method}: a view already computed is one draw`)
+  }
 })
 
 // A render transforms a frame per new column, then adds frames to columns while it has spent under a frame per 2 px or

@@ -55,7 +55,8 @@ Option | Default | Meaning
 `data` | empty | Mono samples; replaces all data. A `Float32Array` is referenced, not copied, and never written to; other array-likes are converted.
 `sampleRate` | `44100` | Hz.
 `range` | `[0, length]` | Visible `[from, to]` in samples: fractional, may extend past the data.
-`scale` | `'log'` | Frequency axis: `'log'` from 20 Hz, `'mel'` or `'lin'` from 0 Hz, to Nyquist.
+`scale` | `'log'` | Frequency axis: `'log'` (octaves) from 20 Hz, `'mel'`, `'erb'` (equal space per auditory filter, ERB-number 21.4 · log10(1 + 0.00437 f), Glasberg & Moore 1990) or `'lin'` from 0 Hz, to Nyquist.
+`method` | `'reassigned'` | How a column draws its frames: `'frames'`, each frame's Hann spectrum as it is (Allen 1977); `'reassigned'`, each bin's power at the time and frequency its phase places it (Auger & Flandrin 1995): a tone one row thin, a click one column thin; `'synchrosqueezed'`, moved in frequency only, time staying the frame's (Thakur & Wu 2011); `'bands'`, frames of a length by band, long for the lows, short for the highs, as editors blend several lengths; `'tapers'`, three sine tapers' spectra averaged (Riedel & Sidorenko 1995): steadier noise; `'wigner'`, the pseudo Wigner–Ville distribution of the analytic signal under a Hann lag window (Ville 1948): lines thin without reassignment, and a cross-term between any two components. Each reads a full-scale sine at 0 dB.
 `band` | whole axis | Visible `[low, high]` in Hz, bottom to top.
 `viewport` | whole canvas | `[x, y, width, height]` in CSS px from the canvas' top-left corner.
 `pixelRatio` | `devicePixelRatio` | Device px per CSS px.

@@ -1,6 +1,6 @@
 {
   "name": "gl-spectrogram",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "WebGL2 spectrogram renderer: FFT on the GPU, reassigned to one-pixel lines, sharp at every zoom",
   "type": "module",
   "main": "index.js",

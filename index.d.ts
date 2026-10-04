@@ -1,7 +1,10 @@
 /** CSS color string (any syntax the browser parses, oklch included) or [r, g, b, a?] with channels 0..1 */
 export type Color = string | ArrayLike<number>
 
-export type Scale = 'log' | 'mel' | 'lin'
+export type Scale = 'log' | 'mel' | 'erb' | 'lin'
+/** How a column draws its frames: the spectrum as it is, reassigned in time and frequency, squeezed in frequency, of a
+ *  length by band, through several tapers, or as the Wigner–Ville distribution */
+export type Method = 'frames' | 'reassigned' | 'synchrosqueezed' | 'bands' | 'tapers' | 'wigner'
 
 export interface Options {
   /** Mono samples; replaces all data. A Float32Array is referenced, not copied; other array-likes are converted. */
@@ -10,8 +13,10 @@ export interface Options {
   sampleRate?: number | null
   /** Visible [from, to] in samples; fractional, may extend past the data. null: [0, length]. */
   range?: [number, number] | null
-  /** Frequency axis: log (from 20 Hz), mel or lin (from 0 Hz). null: log. */
+  /** Frequency axis: log (from 20 Hz), mel, erb or lin (from 0 Hz). null: log. */
   scale?: Scale | null
+  /** How a column draws its frames. null: reassigned. */
+  method?: Method | null
   /** Visible [low, high] in Hz, bottom to top. null: the scale's floor to Nyquist. */
   band?: [number, number] | null
   /** [x, y, width, height] in CSS px, top-left origin. null: the whole canvas. */

@@ -23,9 +23,10 @@ const faded = (n, f, rate, amp) => tone(n, f, rate, amp).map((v, i) => v * Math.
 // ── reference ───────────────────────────────────────────────────────────
 
 // The frequency axes as the REPL's scale.js has them: log from 20 Hz, mel = 2595 · log10(1 + f / 700) (O'Shaughnessy
-// 1987, HTK), lin from 0
-const WARP = { log: Math.log2, mel: f => 2595 * Math.log10(1 + f / 700), lin: f => f }
-const LOW = { log: 20, mel: 0, lin: 0 }
+// 1987, HTK), ERB-number = 21.4 · log10(1 + 0.00437 f) (Glasberg & Moore 1990, Hearing Research 47, eq. 4), lin from 0
+const WARP = { log: Math.log2, mel: f => 2595 * Math.log10(1 + f / 700), erb: f => 21.4 * Math.log10(1 + .00437 * f), lin: f => f }
+const UNWARP = { log: u => 2 ** u, mel: m => 700 * (10 ** (m / 2595) - 1), erb: e => (10 ** (e / 21.4) - 1) / .00437, lin: f => f }
+export const LOW = { log: 20, mel: 0, erb: 0, lin: 0 }
 export const at = (scale, f, lo, hi) => (WARP[scale](f) - WARP[scale](lo)) / (WARP[scale](hi) - WARP[scale](lo))
 
 // Textbook radix-2 FFT in doubles, in place, twiddles computed per butterfly
@@ -60,40 +61,50 @@ export function checkFft() {
   return worst
 }
 
-// The reassigned spectrogram of get(i) (samples; NaN, ±Infinity and out of range read 0) for a view of W × H, in
-// doubles, by the definitions: Hann h, its derivative dh and time-weighted th = (n - N/2)·h, three FFTs a frame
-// (Kodera, Gendrin & de Villedary 1976; Auger & Flandrin 1995; as the REPL's reassign.js):
-//   k̂ = k − N/2π · Im(X_dh X̄_h) / |X_h|²,  t̂ = t + Re(X_th X̄_h) / |X_h|²
-// Power is normalized so a full-scale sine sums to 1: Hann's coherent gain is 1/2 and its equivalent noise bandwidth
-// 1.5 bins (Harris 1978, "On the use of windows for harmonic analysis with the DFT", Proc. IEEE 66(1), table 1).
-// Conventions as index.js promises them: column q spans samples [q·cw − .5, (q+1)·cw − .5), cw = max(samples per px, 1);
-// energy placed outside its frame's window or outside 0..Nyquist is dropped. A column has `sub` frames, the fewest odd
-// number with hops of at most N/2, frame i centered on round((q + (i + .5) / sub)·cw − .5); a cell sums what each frame
-// index gives it and keeps the largest of those sums. Returns the column under each pixel and their cells.
-export function reference(get, n, { range: [from, to], W, H, band, scale, rate, N }) {
-  let spp = (to - from) / W, cw = Math.max(spp, 1), s = (from + .5) / cw, q0 = Math.floor(s), f0 = s - q0, ratio = spp / cw
-  let cols = Array.from({ length: W }, (_, px) => q0 + Math.floor(f0 + (px + .5) * ratio))
-  let qa = cols[0], qb = cols[W - 1] + 1, m = Math.ceil((N / 2 + 1) / cw) + 1, w = WARP[scale]
-  let b0 = w(band[0]), bk = H / (w(band[1]) - w(band[0])), norm = 1 / (1.5 * (N / 4) ** 2)
-  let cells = new Float64Array((qb - qa) * H), hops = Math.ceil(2 * cw / N), sub = hops > 1 ? hops | 1 : 1, sums = new Float64Array(cells.length)
-  let win = [n => .5 - .5 * Math.cos(2 * Math.PI * n / N), n => Math.PI / N * Math.sin(2 * Math.PI * n / N), n => (n - N / 2) * (.5 - .5 * Math.cos(2 * Math.PI * n / N))]
-  let wins = win.map(f => Float64Array.from({ length: N }, (_, i) => f(i)))
-  let re = wins.map(() => new Float64Array(N)), im = wins.map(() => new Float64Array(N))
-  let last = Math.ceil(n / cw)
-  for (let f = 0; f < sub; f++) {
-    sums.fill(0)
-    for (let q = Math.max(qa, 0) - m; q < Math.min(qb, last) + m; q++) {
-      let t = Math.round((q + (f + .5) / sub) * cw - .5), start = t - N / 2
-      for (let i = 0; i < N; i++) {
-        let k = start + i, v = k >= 0 && k < n ? get(k) : 0
-        if (!Number.isFinite(v)) v = 0
-        for (let j = 0; j < 3; j++) { re[j][i] = v * wins[j][i]; im[j][i] = 0 }
-      }
-      for (let j = 0; j < 3; j++) fft(re[j], im[j])
+const hann = N => n => .5 - .5 * Math.cos(2 * Math.PI * n / N)
+// The spectrum of samples [t − L/2, t + L/2) of get (NaN, ±Infinity and out of range read 0), each times w(i), padded
+// with zeros to `size`: [re, im]
+function spectrum(get, n, t, L, w, size = L) {
+  let re = new Float64Array(size), im = new Float64Array(size)
+  for (let i = 0; i < L; i++) { let k = t - L / 2 + i, v = k >= 0 && k < n ? get(k) : 0; re[i] = (Number.isFinite(v) ? v : 0) * w(i) }
+  fft(re, im)
+  return [re, im]
+}
+// The highest a spectrum P (bins 0..last, drawn as a line through them) reaches between fractional bins a and b
+function across(P, last, a, b) {
+  a = Math.min(Math.max(a, 0), last); b = Math.min(Math.max(b, 0), last)
+  let at = x => { let i = Math.min(Math.floor(x), last - 1); return P[i] + (P[i + 1] - P[i]) * (x - i) }, v = Math.max(at(a), at(b))
+  for (let k = Math.ceil(a); k < b; k++) v = Math.max(v, P[k])
+  return v
+}
+
+// What each method makes of a frame centered on sample t, in doubles, by the definitions, into the cells `sums` (a
+// column of H rows per column from qa). Every method reads a full-scale sine at 0 dB:
+//   reassigned  Hann h, its derivative dh and time-weighted th = (n − N/2)·h, three FFTs a frame (Kodera, Gendrin & de
+//               Villedary 1976; Auger & Flandrin 1995; as the REPL's reassign.js): k̂ = k − N/2π · Im(X_dh X̄_h) / |X_h|²,
+//               t̂ = t + Re(X_th X̄_h) / |X_h|²; power summed where they land, normalized by Hann's coherent gain 1/2 and
+//               equivalent noise bandwidth 1.5 bins (Harris 1978, "On the use of windows for harmonic analysis with the
+//               DFT", Proc. IEEE 66(1), table 1); energy placed outside its frame's window or 0..Nyquist dropped
+//   synchrosqueezed  the frame's own column; each bin's value as though the frame were centered on n = 0, (−1)^k X_h,
+//               summed complex in the row of k̂ (Thakur & Wu 2011), its power over (N/2)², what a full-scale sine's bins
+//               sum to (N times its positive half ½ at n = 0)
+//   frames      |X_h|² over (N/4)², Hann's coherent gain; a row reads the highest the bins drawn as a line reach in it
+//   bands       frames, N × 4, 2, 1, ½, ¼ below 200, 500, 1250, 3000 Hz and above, by the row's middle
+//   tapers      sine tapers √(2/N) sin(πjn/N), j = 1, 2, 3 (Riedel & Sidorenko 1995), each frame padded to 2N, their
+//               powers summed over that sum for a full-scale sine at its bin, Σ_j (½ Σ_n w_j)²
+//   wigner      the analytic signal of the 2N samples around t (FFT, 2X over 0 < k < N, inverse FFT), the lag products
+//               z(t + m) z*(t − m) under a Hann lag window .5 + .5 cos(2πm/N), |m| < N/2, their N-point FFT's real
+//               part's magnitude over N/2, the lag window's sum (Ville 1948), at k · rate / 2N
+const METHODS = {
+  reassigned({ get, n, N, H, rate, scale, b0, bk, cw, qa, qb, sums }) {
+    let w = WARP[scale], norm = 1 / (1.5 * (N / 4) ** 2)
+    let wins = [n => .5 - .5 * Math.cos(2 * Math.PI * n / N), n => Math.PI / N * Math.sin(2 * Math.PI * n / N), n => (n - N / 2) * (.5 - .5 * Math.cos(2 * Math.PI * n / N))]
+    return t => {
+      let [[hr, hi], [dr, di], [tr, ti]] = wins.map(win => spectrum(get, n, t, N, win))
       for (let k = 0; k < N / 2; k++) {
-        let hr = re[0][k], hi = im[0][k], P = hr * hr + hi * hi, p = P * norm
+        let P = hr[k] * hr[k] + hi[k] * hi[k], p = P * norm
         if (!(p > 1e-20)) continue
-        let kf = k - N / (2 * Math.PI) * (im[1][k] * hr - re[1][k] * hi) / P, dt = (re[2][k] * hr + im[2][k] * hi) / P
+        let kf = k - N / (2 * Math.PI) * (di[k] * hr[k] - dr[k] * hi[k]) / P, dt = (tr[k] * hr[k] + ti[k] * hi[k]) / P
         let fz = kf * rate / N
         if (Math.abs(dt) > N / 2 || (scale === 'log' ? fz <= 0 : fz < 0)) continue
         let row = Math.floor((w(fz) - b0) * bk), col = Math.floor((t + dt + .5) / cw)
@@ -101,15 +112,96 @@ export function reference(get, n, { range: [from, to], W, H, band, scale, rate, 
         sums[(col - qa) * H + row] += p
       }
     }
-    for (let c = 0; c < cells.length; c++) cells[c] = Math.max(cells[c], sums[c])
+  },
+  synchrosqueezed({ get, n, N, H, rate, scale, b0, bk, qa, qb, sums, loose }) {
+    let w = WARP[scale], h = N / 2, re = new Float64Array(H), im = new Float64Array(H)
+    let wins = [n => .5 - .5 * Math.cos(2 * Math.PI * n / N), n => Math.PI / N * Math.sin(2 * Math.PI * n / N)]
+    return (t, q) => {
+      if (q < qa || q >= qb) return
+      let [[hr, hi], [dr, di]] = wins.map(win => spectrum(get, n, t, N, win))
+      re.fill(0); im.fill(0)
+      for (let k = 0; k < N / 2; k++) {
+        let P = hr[k] * hr[k] + hi[k] * hi[k]
+        if (!(P / (h * h) > 1e-20)) continue
+        let fz = (k - N / (2 * Math.PI) * (di[k] * hr[k] - dr[k] * hi[k]) / P) * rate / N
+        if (scale === 'log' ? fz <= 0 : fz < 0) continue
+        let y = (w(fz) - b0) * bk, row = Math.floor(y), sign = k & 1 ? -1 : 1
+        // within float32's reach of a row's edge: either row may get it, and sums, unlike powers, change unevenly
+        if (Math.abs(y - Math.round(y)) < 1e-3) for (let r of [Math.round(y) - 1, Math.round(y)]) if (r >= 0 && r < H) loose[(q - qa) * H + r] = 1
+        if (row < 0 || row >= H) continue
+        re[row] += sign * hr[k] / h; im[row] += sign * hi[k] / h
+      }
+      for (let r = 0; r < H; r++) sums[(q - qa) * H + r] = re[r] * re[r] + im[r] * im[r]
+    }
+  },
+  frames: o => bands(o, () => 1),
+  bands: o => bands(o, f => [[200, 4], [500, 2], [1250, 1], [3000, .5], [Infinity, .25]].find(([edge]) => f < edge)[1]),
+  tapers({ get, n, N, H, rate, edge, qa, qb, sums }) {
+    let tapers = [1, 2, 3].map(j => i => Math.sqrt(2 / N) * Math.sin(Math.PI * j * i / N))
+    let peak = tapers.reduce((s, w) => { let sum = 0; for (let i = 0; i < N; i++) sum += w(i); return s + (sum / 2) ** 2 }, 0)
+    return (t, q) => {
+      if (q < qa || q >= qb) return
+      let P = new Float64Array(N + 1)
+      for (let w of tapers) { let [re, im] = spectrum(get, n, t, N, w, 2 * N); for (let k = 0; k <= N; k++) P[k] += (re[k] * re[k] + im[k] * im[k]) / peak }
+      for (let r = 0; r < H; r++) sums[(q - qa) * H + r] = across(P, N, edge(r) / (rate / (2 * N)), edge(r + 1) / (rate / (2 * N)))
+    }
+  },
+  wigner({ get, n, N, H, rate, edge, qa, qb, sums }) {
+    return (t, q) => {
+      if (q < qa || q >= qb) return
+      let S = 2 * N, [re, im] = spectrum(get, n, t, S, () => 1)
+      // analytic: 2X over 0 < k < N, 0 elsewhere; inverse FFT as a forward one of the conjugate
+      for (let k = 0; k < S; k++) { let g = k > 0 && k < N ? 2 : 0; re[k] *= g; im[k] *= -g }
+      fft(re, im)
+      let zr = re.map(v => v / S), zi = im.map(v => -v / S), kr = new Float64Array(N), ki = new Float64Array(N)
+      for (let m = -N / 2 + 1; m < N / 2; m++) {
+        let a = N + m, b = N - m, h = .5 + .5 * Math.cos(2 * Math.PI * m / N), i = (m + N) % N
+        kr[i] = h * (zr[a] * zr[b] + zi[a] * zi[b]); ki[i] = h * (zi[a] * zr[b] - zr[a] * zi[b])
+      }
+      fft(kr, ki)
+      let P = kr.map(v => Math.abs(v) * 2 / N)
+      for (let r = 0; r < H; r++) sums[(q - qa) * H + r] = across(P, N - 1, edge(r) / (rate / (2 * N)), edge(r + 1) / (rate / (2 * N)))
+    }
   }
-  return { cols, qa, last, cells, cw, sub }
+}
+// Hann frames, of N times by(f) samples for the row at f (clamped to 16..16384), each row from its own
+function bands({ get, n, N, H, rate, edge, qa, qb, sums }, by) {
+  let sizes = Array.from({ length: H }, (_, r) => Math.min(Math.max(N * by(edge(r + .5)), 16), 16384))
+  return (t, q) => {
+    if (q < qa || q >= qb) return
+    let P = new Map()
+    for (let r = 0; r < H; r++) {
+      let L = sizes[r]
+      if (!P.has(L)) { let [re, im] = spectrum(get, n, t, L, hann(L)); P.set(L, Float64Array.from({ length: L / 2 + 1 }, (_, k) => (re[k] * re[k] + im[k] * im[k]) / (L / 4) ** 2)) }
+      sums[(q - qa) * H + r] = across(P.get(L), L / 2, edge(r) / (rate / L), edge(r + 1) / (rate / L))
+    }
+  }
 }
 
-// Every pixel column of sg against the reference: cells within 0.01 dB where the reference is within 60 dB of the view's
-// loudest cell (they agree to 1e-4 dB but where a point moved). A point that float32 puts across a cell edge moves its
-// energy one cell over: such a cell passes when the 3 × 3 sums around it agree within 0.1 dB, and is counted as moved.
-export function compare(sg, get, view, pr = 1) {
+// The spectrogram of get(i) by `method` for a view of W × H, in doubles. Conventions as index.js promises them: column
+// q spans samples [q·cw − .5, (q+1)·cw − .5), cw = max(samples per px, 1); a column has `sub` frames, the fewest odd
+// number with hops of at most N/2, frame i centered on round((q + (i + .5) / sub)·cw − .5); a cell sums what each frame
+// index gives it and keeps the largest of those sums. Returns the column under each pixel and their cells.
+export function reference(get, n, { range: [from, to], W, H, band, scale, rate, N, method = 'reassigned' }) {
+  let spp = (to - from) / W, cw = Math.max(spp, 1), s = (from + .5) / cw, q0 = Math.floor(s), f0 = s - q0, ratio = spp / cw
+  let cols = Array.from({ length: W }, (_, px) => q0 + Math.floor(f0 + (px + .5) * ratio))
+  let qa = cols[0], qb = cols[W - 1] + 1, m = method === 'reassigned' ? Math.ceil((N / 2 + 1) / cw) + 1 : 0, w = WARP[scale]
+  let b0 = w(band[0]), bk = H / (w(band[1]) - w(band[0])), edge = r => UNWARP[scale](b0 + r / bk)
+  let cells = new Float64Array((qb - qa) * H), hops = Math.ceil(2 * cw / N), sub = hops > 1 ? hops | 1 : 1, sums = new Float64Array(cells.length)
+  let last = Math.ceil(n / cw), loose = new Uint8Array(cells.length), frame = METHODS[method]({ get, n, N, H, rate, scale, b0, bk, edge, cw, qa, qb, sums, loose })
+  for (let f = 0; f < sub; f++) {
+    sums.fill(0)
+    for (let q = Math.max(qa, 0) - m; q < Math.min(qb, last) + m; q++) frame(Math.round((q + (f + .5) / sub) * cw - .5), q)
+    for (let c = 0; c < cells.length; c++) cells[c] = Math.max(cells[c], sums[c])
+  }
+  return { cols, qa, last, cells, cw, sub, loose }
+}
+
+// Every pixel column of sg against the reference: cells within 0.01 dB where the reference is within `depth` dB of the
+// view's loudest cell (they agree to 1e-4 dB but where a point moved). A point that float32 puts across a cell edge moves
+// its energy one cell over: such a cell passes when the 3 × 3 sums around it agree within 0.1 dB, and is counted as moved;
+// so is a cell the reference marks loose, a complex sum that a bin within float32's reach of its edge may join or leave.
+export function compare(sg, get, view, pr = 1, depth = 60) {
   let { range, W, H } = view, ref = reference(get, sg.length, view), bad = [], cells = 0, moved = 0
   let got = new Float64Array(ref.cells.length), have = new Uint8Array(ref.cells.length / H)
   for (let px = 0; px < W; px++) {
@@ -129,17 +221,18 @@ export function compare(sg, get, view, pr = 1) {
   let db = (a, b) => Math.abs(10 * Math.log10(a / b))
   for (let i = 0; i < have.length; i++) if (have[i]) for (let r = 0; r < H; r++) {
     let want = ref.cells[i * H + r], g = got[i * H + r]
-    if (!(want >= peak * 1e-6)) continue
+    if (!(want >= peak * 10 ** (-depth / 10))) continue
     cells++
     if (db(g, want) <= .01) continue
     moved++
+    if (ref.loose[i * H + r]) continue
     if (!(db(box(got, i, r), box(ref.cells, i, r)) <= .1)) bad.push({ col: i + ref.qa, row: r, got: 10 * Math.log10(g), want: 10 * Math.log10(want), range })
   }
   return { cells, moved, bad }
 }
 
 // Many views of fixed data, each against the reference
-export function views({ seed, W = 160, H = 96, list, pr = 1, far = 0 }) {
+export function views({ seed, W = 160, H = 96, list, pr = 1, far = 0, method = null, depth = 60 }) {
   let r = random(seed), rate = 48000, n = rate / 2, d = new Float32Array(n)
   // two tones, a chirp, clicks, noise at -40 dB
   for (let i = 0; i < n; i++) {
@@ -153,9 +246,9 @@ export function views({ seed, W = 160, H = 96, list, pr = 1, far = 0 }) {
   let out = { views: 0, cells: 0, moved: 0, bad: [] }
   for (let v of list) {
     let scale = v.scale ?? 'log', band = v.band ?? [LOW[scale], rate / 2], range = v.range.map(x => x + far)
-    sg.update({ range, band: v.band ?? null, scale, size: v.size ?? 512 }).render()
+    sg.update({ range, band: v.band ?? null, scale, size: v.size ?? 512, method }).render()
     while (sg.pending) sg.render()
-    let res = compare(sg, get, { range, W, H, band, scale, rate, N: sg.size }, pr)
+    let res = compare(sg, get, { range, W, H, band, scale, rate, N: sg.size, method: method ?? 'reassigned' }, pr, depth)
     out.views++; out.cells += res.cells; out.moved += res.moved; out.bad.push(...res.bad)
   }
   c.remove()
@@ -165,8 +258,8 @@ export function views({ seed, W = 160, H = 96, list, pr = 1, far = 0 }) {
 // ── placement ─────────────────────────────────────────────────────────
 
 // A full-scale 1 kHz sine at 48 kHz on each scale: the loudest row per column, and its level
-export function sine({ scale, band, W = 64, H = 200, amp = 1, f = 1000, size = null }) {
-  let rate = 48000, c = canvas(W, H), sg = new Spectrogram(c, { pixelRatio: 1, sampleRate: rate, scale, band, size, data: tone(rate, f, rate, amp) })
+export function sine({ scale, band, W = 64, H = 200, amp = 1, f = 1000, size = null, method = null }) {
+  let rate = 48000, c = canvas(W, H), sg = new Spectrogram(c, { pixelRatio: 1, sampleRate: rate, scale, band, size, method, data: tone(rate, f, rate, amp) })
   sg.render()
   let rows = [], levels = [], next = [], [lo, hi] = sg.band
   for (let x = 4; x < W - 4; x++) {
@@ -180,20 +273,20 @@ export function sine({ scale, band, W = 64, H = 200, amp = 1, f = 1000, size = n
 }
 
 // One click, at several zooms: the column holding its sample is the loudest by far
-export function click({ k, spans, W = 200, H = 64 }) {
+export function click({ k, spans, W = 200, H = 64, method = null }) {
   let rate = 48000, n = 96000, d = new Float32Array(n), out = []
   d[k] = 1
-  let c = canvas(W, H), sg = new Spectrogram(c, { pixelRatio: 1, sampleRate: rate, data: d, size: 512 })
+  let c = canvas(W, H), sg = new Spectrogram(c, { pixelRatio: 1, sampleRate: rate, data: d, size: 512, method })
   for (let span of spans) {
     let from = k - span * .37, renders = 1
     sg.update({ range: [from, from + span] }).render()
     while (sg.pending) sg.render(), renders++
     let energy = []
     for (let x = 0; x < W; x++) energy.push(sg.pick(x + .5)?.levels.reduce((s, v) => s + 10 ** (v / 10), 0) ?? 0)
-    let best = energy.indexOf(Math.max(...energy)), p = sg.pick(best + .5)
+    let best = energy.indexOf(Math.max(...energy)), p = sg.pick(best + .5), holds = x => { let c = sg.pick(x + .5); return c && c.from <= k && k < c.to }
     // other columns: those not showing the click's sample
-    let rest = energy.filter((_, x) => { let c = sg.pick(x + .5); return c && !(c.from <= k && k < c.to) })
-    out.push({ span, renders, holds: p.from <= k && k < p.to, from: p.from, to: p.to, peak: 10 * Math.log10(energy[best]), others: 10 * Math.log10(Math.max(0, ...rest)) })
+    let rest = energy.filter((_, x) => !holds(x)), own = energy.filter((_, x) => holds(x))
+    out.push({ span, renders, holds: p.from <= k && k < p.to, from: p.from, to: p.to, peak: 10 * Math.log10(energy[best]), own: 10 * Math.log10(Math.max(0, ...own)), others: 10 * Math.log10(Math.max(0, ...rest)) })
   }
   c.remove()
   return out
@@ -214,10 +307,10 @@ function worst(a, b, floor = -100) {
 }
 
 // Pans that reuse cached columns give what a fresh view gives
-export function pans() {
+export function pans({ method = null } = {}) {
   let rate = 48000, r = random(5), d = Float32Array.from({ length: rate }, (_, i) => Math.sin(i * .07) * .3 + (r() - .5) * .05 + (i % 9001 === 0 ? 1 : 0))
-  let W = 180, H = 80, a = new Spectrogram(canvas(W, H), { pixelRatio: 1, sampleRate: rate, data: d, size: 512 })
-  let b = new Spectrogram(canvas(W, H), { pixelRatio: 1, sampleRate: rate, size: 512 }), out = 0, runs = 0
+  let W = 180, H = 80, a = new Spectrogram(canvas(W, H), { pixelRatio: 1, sampleRate: rate, data: d, size: 512, method })
+  let b = new Spectrogram(canvas(W, H), { pixelRatio: 1, sampleRate: rate, size: 512, method }), out = 0, runs = 0
   let spp = 37.3, from = 5000.4
   a.update({ range: [from, from + spp * W] }).render()
   let draws = 0, draw = a.gl.drawArrays.bind(a.gl)
@@ -526,7 +619,7 @@ export function api() {
   c2d.getContext('2d')
   try { new Spectrogram(c2d); out.ctor = 'accepted' } catch (e) { out.ctor = e.name }
   let d = new Float32Array(7e4), sg = new Spectrogram(canvas(100, 20), { pixelRatio: 1, data: d })
-  for (let o of [{ range: [0, NaN] }, { band: [100, 50] }, { band: [0, 100] }, { viewport: [0, 0, 10] }, { size: 1000 }, { size: 8 }, { scale: 'bark' }, { levels: [0, -10] }, { depth: -1 }, { sampleRate: 0 }, { pixelRatio: 'x' }, { gain: 'x' }, { color: 'not-a-color' }, { color: ['#000'] }])
+  for (let o of [{ range: [0, NaN] }, { band: [100, 50] }, { band: [0, 100] }, { viewport: [0, 0, 10] }, { size: 1000 }, { size: 8 }, { scale: 'bark' }, { method: 'cqt' }, { levels: [0, -10] }, { depth: -1 }, { sampleRate: 0 }, { pixelRatio: 'x' }, { gain: 'x' }, { color: 'not-a-color' }, { color: ['#000'] }])
     try { sg.update(o); out.errors[JSON.stringify(o)] = 'accepted' } catch (e) { out.errors[JSON.stringify(o)] = e.name }
   try { sg.set([1], -1); out.offset = 'accepted' } catch (e) { out.offset = e.name }
   try { sg.set([1], 2 ** 31); out.far = 'accepted' } catch (e) { out.far = e.name }
@@ -537,7 +630,7 @@ export function api() {
   out.shared = d[3]
   sg.update({ range: [2, 4], band: [100, 1000], sampleRate: 8000, scale: 'mel' })
   out.getters = [sg.range, sg.band]
-  sg.update({ range: null, band: null, sampleRate: null, scale: null })
+  sg.update({ range: null, band: null, sampleRate: null, scale: null, method: null })
   out.defaults = [sg.range, sg.band]
   out.size = sg.size
   sg.destroy()
