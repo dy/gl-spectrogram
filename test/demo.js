@@ -20,7 +20,7 @@ test('playground: palettes, scale/band, levels, playback, streaming, files and r
   try {
     await page.goto(origin + '/index.html'); await page.waitForURL(origin + '/example/');
     assert.equal(new URL(page.url()).pathname, '/example/'); await wait('Plucked strings')
-    await page.waitForFunction(() => document.getElementById('perf').textContent.includes('ms/frame'))
+    await page.waitForFunction(() => document.getElementById('perf').textContent.includes('first render'))
     const initial = await pixels()
     assert.equal(await page.locator('#panel').isHidden(), true)
     await page.locator('#settings').click()

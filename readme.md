@@ -2,13 +2,9 @@
 
 WebGL2 spectrogram renderer for audio editors. Each render computes what the view shows on the GPU: an FFT frame per device-pixel column, reassigned, so a steady tone draws one pixel row thin and a click one pixel column thin. Zooms, pans and frequency zooms draw sharp in the frame they happen, over an hour of 48 kHz audio.
 
-<img src="example/preview.png" width="968" alt="Fullscreen spectrogram of plucked strings and percussion, with compact controls">
+[<img src="example/preview.png" width="968" alt="24 seconds of plucked strings and percussion: partials as short horizontal lines, drum hits as thin columns">](https://dy.github.io/gl-spectrogram/)
 
-[Demo](https://dy.github.io/gl-spectrogram/): a large canvas with the original compact controls and settings tucked away. The built-in samples include synthesized plucked strings with percussion, bird calls, voice, sweeps, chords, harmonics, clicks and noise. Play, pause and seek, open a local audio file, inspect frequency and level under the pointer, or stream a generated signal. Settings include palettes and their direction, log/mel/linear scales, frequency limits, FFT size, gain, automatic depth or explicit dB limits. Sound starts only when you press play.
-
-Wheel or pinch to zoom time, drag to pan, Shift+wheel to zoom frequencies. Arrow keys pan, +/− zoom, Home fits the audio; **Voice band** focuses on 80–4,000 Hz. The current API computes the FFT from samples, so the controls expose its actual options rather than the old magnitude-frame smoothing and weighting settings.
-
-[Audio stress test](https://dy.github.io/gl-spectrogram/example/stress.html): stereo speech with sweep, chord and click landmarks. `?minutes=60` makes an hour.
+[Demo](https://dy.github.io/gl-spectrogram/): plucked strings and percussion, birdsong, voice, sweeps, chords and clicks, or your own audio. Play, stream; wheel zooms time, Shift+wheel frequency, drag pans.
 
 ## Usage
 

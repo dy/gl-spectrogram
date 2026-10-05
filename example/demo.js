@@ -6,7 +6,7 @@ const canvas = $('chart'), ax = $('axes').getContext('2d'), grid = $('grid').get
 const LEFT = 52, TOP = 30, GAP = 24
 let frames = [], reported = 0
 let lanes = [], range = [0, 1], band = [20, 24000], levels = null, scale = 'log', rate = 48000, title = '', gen
-let w = 1, h = 1, pw = 1, lh = 1, pr = 1, dirty = true, paint = true, running = false, last = 0, task = 0, url
+let w = 1, h = 1, pw = 1, lh = 1, pr = 1, dirty = true, paint = true, first = true, running = false, last = 0, task = 0, url
 const length = () => lanes[0]?.length || 1
 function view(a, b, manual = false) {
   const span = clamp(b - a, 48, length() * 1.5), start = clamp(a, -span / 4, length() - span * .75)
@@ -49,7 +49,7 @@ function install(data, sr, heading) {
   catch (e) { fresh.forEach(s => s.destroy()); throw e }
   lanes.forEach(s => s.destroy()); lanes = fresh; rate = sr; title = heading
   const gl = lanes[0].gl; gl.disable(gl.SCISSOR_TEST); gl.clear(gl.COLOR_BUFFER_BIT)
-  fit(); layout(); paint = true; status(); error('')
+  fit(); layout(); paint = first = true; status(); error('')
   const file = $('source').value === 'file'
   $('stream').disabled = file; $('duration-row').hidden = file; $('speed-row').hidden = file
 }
@@ -185,10 +185,13 @@ requestAnimationFrame(function draw(now) {
       const levels = lanes[0].levels
       $('floor-label').value = `${Math.round(levels[0])} dB`; $('top-label').value = `${Math.round(levels[1])} dB`
       const fps = frames.length > 1 ? Math.round((frames.length - 1) * 1000 / (now - frames[0])) : 0
-      $('perf').value = `${running ? `${fps} fps  ` : ''}${(performance.now() - start).toFixed(1)} ms/frame  FFT ${lanes[0].size}${lanes.some(s => s.pending) ? '  refining' : ''}`
+      // The first render of new data uploads it and levels the whole data, compiling shaders once: not a frame's cost
+      const cost = (performance.now() - start).toFixed(1)
+      $('perf').value = `${running ? `${fps} fps  ` : ''}${first ? `first render ${cost} ms` : `${cost} ms/frame`}  FFT ${lanes[0].size}${lanes.some(s => s.pending) ? '  refining' : ''}`
       $('perf').title = 'CPU render time; excludes GPU completion.'
       status(); reported = now
     }
+    first = false
   } catch (e) { stop(); error(e.message) }
 })
 await generate()
