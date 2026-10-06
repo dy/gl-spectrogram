@@ -133,7 +133,7 @@ v1 drew magnitude frames pushed to it one at a time, scrolling. v2 computes the 
 
 * `npm test`: every cell of 20 views against a CPU reference in doubles (three FFTs a frame, the reassignment formulas as written), within 0.01 dB, over log, mel and lin scales, zoomed bands, FFT sizes 256 to 2048, refined zoomed-out columns, offset 10⁹ and DPR 2; a full-scale sine on the row each scale's formula gives at 0 dB; a click on its column from 0.3 to 2880 samples per px; pans, `push()`/`set()` and refinement against fresh views; previews, levels, gaps, the color ramp's lightness, colormaps, half floats, stale texture layers, context loss, an hour of audio and the API contract. Headless Chromium through Playwright; `npx playwright install chromium` if it is missing.
 * `npm run bench`: the table above.
-* Demo: any static server at the repo root, e.g. `npx serve`, then open `/example/`. `?source=cello` picks a recording, `wqxr` the radio, `mic` the microphone. The first v2 demo is at `/example/stress.html` (`?minutes=60` makes an hour), the v1 demo at `/example/old.html`.
+* Demo: any static server at the repo root, e.g. `npx serve`, then open `/`. `?source=cello` picks a recording, `wqxr` the radio, `mic` the microphone. The first v2 demo is at `/example/stress.html` (`?minutes=60` makes an hour), the v1 demo at `/example/old.html`.
 
 ## License
 

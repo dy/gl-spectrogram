@@ -26,7 +26,7 @@ test('demo: sound comes in from the right as it plays; drag back, zoom time and 
   page.on('pageerror', e => errors.push(e.message))
   await page.route(url => !url.href.startsWith(origin), route => route.abort()) // offline: the libraries' stand-ins
   try {
-    await page.goto(origin + '/example/')
+    await page.goto(origin + '/index.html')
     await page.waitForFunction(() => document.getElementById('title').textContent === 'Blackbird singing')
     assert.equal(await page.locator('#credit').textContent(), 'Diana Tudor, xeno-canto, CC BY 4.0')
     assert.equal(await ink(page, 'chart'), 0, 'nothing before a click')
