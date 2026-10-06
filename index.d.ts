@@ -92,6 +92,14 @@ export default class Spectrogram {
   push(samples: ArrayLike<number>): this
   /** Write samples at offset, extending the data if needed; a gap before offset reads as silence */
   set(samples: ArrayLike<number>, offset?: number): this
+  /**
+   * Spectra of samples held elsewhere (hours of audio): a column after another from column `at`, each `hop` samples, the
+   * loudest each bin reaches over its Hann frames of `size` (every size / 2), a byte per bin to Nyquist: (dB + 150) · 1.6,
+   * 0 silence. Columns whose frames read samples not held draw from them; set() writes samples over them.
+   */
+  spectra(levels: Uint8Array, options: { size: number, hop: number, at?: number, length?: number }): this
+  /** Let go of the samples of the whole 65536-sample chunks within [from, to); the spectra given draw them again */
+  drop(from?: number, to?: number): this
   /** Draw into the viewport, over what is there */
   render(): this
   /** Clear the viewport to transparent */

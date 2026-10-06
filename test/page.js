@@ -255,6 +255,90 @@ export function views({ seed, W = 160, H = 96, list, pr = 1, far = 0, method = n
   return { ...out, bad: out.bad.slice(0, 4), nbad: out.bad.length }
 }
 
+// ── spectra given ─────────────────────────────────────────────────────
+
+// What a host holding the samples elsewhere gives (spectra()): per column of `hop` samples, the loudest each bin reaches
+// over its Hann frames of N, every N/2 samples centered on multiples of N/2 from N/2, |X|² over (N/4)², as a byte
+// (dB + 150) · 1.6, 0 for silence
+export function spectraOf(get, n, N, hop) {
+  let bins = N / 2 + 1, cols = Math.ceil(n / hop), out = new Uint8Array(cols * bins), most = new Float64Array(cols * bins)
+  for (let t = N / 2; t - N / 2 < n; t += N / 2) {
+    let o = Math.floor(t / hop)
+    if (o >= cols) break
+    let [re, im] = spectrum(get, n, t, N, hann(N))
+    for (let k = 0; k < bins; k++) most[o * bins + k] = Math.max(most[o * bins + k], (re[k] * re[k] + im[k] * im[k]) / (N / 4) ** 2)
+  }
+  for (let i = 0; i < out.length; i++) out[i] = most[i] > 0 ? Math.max(1, Math.min(255, Math.round((10 * Math.log10(most[i]) + 150) * 1.6))) : 0
+  return out
+}
+// The cells of a view drawn from levels alone, in doubles: column q the loudest of the given columns its samples span
+// (the one under its middle, when narrower than theirs), each read across rows as frames are
+function given(levels, N, hop, cols, { range: [from, to], W, H, band, scale, rate }) {
+  let spp = (to - from) / W, cw = Math.max(spp, 1), s = (from + .5) / cw, q0 = Math.floor(s), f0 = s - q0, ratio = spp / cw
+  let w = WARP[scale], b0 = w(band[0]), bk = H / (w(band[1]) - w(band[0])), edge = r => UNWARP[scale](b0 + r / bk), bins = N / 2 + 1, hz = rate / N
+  let P = o => Float64Array.from({ length: bins }, (_, k) => { let q = levels[o * bins + k]; return q ? 10 ** ((q / 1.6 - 150) / 10) : 0 })
+  return Array.from({ length: W }, (_, px) => {
+    let q = q0 + Math.floor(f0 + (px + .5) * ratio), a = Math.floor((q * cw - .5) / hop), b = Math.ceil(((q + 1) * cw - .5) / hop)
+    if (b - a < 1) { a = Math.floor(((q + .5) * cw - .5) / hop); b = a + 1 }
+    let cells = new Float64Array(H)
+    for (let o = Math.max(a, 0); o < Math.min(b, cols); o++) { let p = P(o); for (let r = 0; r < H; r++) cells[r] = Math.max(cells[r], across(p, N / 2, edge(r) / hz, edge(r + 1) / hz)) }
+    return cells
+  })
+}
+// A sound held only as its spectra, zoomed out past their columns and in within them; then a part of its samples set, its
+// columns from them as data given whole draws them; then let go, from the spectra again. Each view against its reference
+export function spectral({ seed, W = 160, H = 96 }) {
+  let r = random(seed), rate = 48000, n = 1 << 20, N = 1024, hop = 4096, d = new Float32Array(n)
+  for (let i = 0; i < n; i++) { let t = i / rate; d[i] = (i < n / 2 ? .5 : .05) * Math.sin(2 * Math.PI * 1000 * t) + .2 * Math.sin(2 * Math.PI * (300 + 40 * t) * t) + .01 * (r() * 2 - 1) }
+  let get = i => d[i], levels = spectraOf(get, n, N, hop), cols = Math.ceil(n / hop), out = { cells: 0, bad: [] }
+  let sg = new Spectrogram(canvas(W, H), { pixelRatio: 1, sampleRate: rate, size: N, method: 'frames' })
+  sg.spectra(levels.subarray(0, 100 * (N / 2 + 1)), { size: N, hop })
+  sg.spectra(levels.subarray(100 * (N / 2 + 1)), { size: N, hop, at: 100, length: n })
+  if (sg.length !== n) out.bad.push({ length: sg.length })
+  let check = (range, want) => {
+    sg.update({ range }).render()
+    let band = [20, rate / 2], ref = want ?? given(levels, N, hop, cols, { range, W, H, band, scale: 'log', rate })
+    for (let px = 0; px < W; px++) {
+      let c = sg.pick(px + .5)
+      if (!c) { if (ref[px].some(v => v > 1e-12)) out.bad.push({ range, px, got: null }); continue }
+      for (let row = 0; row < H; row++) {
+        let g = 10 ** (c.levels[row] / 10), w = ref[px][row]
+        if (!(w > 1e-12)) continue
+        out.cells++
+        if (Math.abs(10 * Math.log10(g / w)) > .01) out.bad.push({ range, px, row, got: c.levels[row], want: 10 * Math.log10(w) })
+      }
+    }
+  }
+  let views = [[0, n], [-1e5, n + 1e5], [2e5, 2e5 + 160 * 6000], [5e5, 5e5 + 160 * 300], [3e5, 3e5 + 160 * 40]]
+  for (let v of views) check(v)
+  // zoomed out, much as the samples draw it: their frames placed apart, each level to a byte's step
+  let full = new Spectrogram(canvas(W, H), { pixelRatio: 1, sampleRate: rate, size: N, method: 'frames', data: d }), diffs = []
+  full.update({ range: [0, n] }).render()
+  while (full.pending) full.render()
+  sg.update({ range: [0, n] }).render()
+  for (let px = 0; px < W; px++) {
+    let a = full.pick(px + .5).levels, b = sg.pick(px + .5).levels, top = Math.max(...a)
+    for (let row = 0; row < H; row++) if (a[row] > top - 30) diffs.push(Math.abs(a[row] - b[row]))
+  }
+  diffs.sort((p, q) => p - q)
+  out.alike = { median: diffs[diffs.length >> 1], p95: diffs[Math.floor(diffs.length * .95)] }
+  full.canvas.remove()
+  // a part's samples: a view inside it as the data given whole draws it
+  let part = [5 * 65536, 9 * 65536], inside = [5.5 * 65536, 5.5 * 65536 + 160 * 300]
+  sg.set(d.subarray(...part), part[0])
+  let whole = new Spectrogram(canvas(W, H), { pixelRatio: 1, sampleRate: rate, size: N, method: 'frames', data: d })
+  whole.update({ range: inside }).render()
+  while (whole.pending) whole.render()
+  sg.update({ range: inside }).render()
+  while (sg.pending) sg.render()
+  check(inside, Array.from({ length: W }, (_, px) => Float64Array.from(whole.pick(px + .5).levels, l => 10 ** (l / 10))))
+  // let go: from the spectra again
+  sg.drop(...part)
+  for (let v of [inside, views[0]]) check(v)
+  sg.canvas.remove(); whole.canvas.remove()
+  return { cells: out.cells, alike: out.alike, bad: out.bad.slice(0, 4), nbad: out.bad.length }
+}
+
 // ── placement ─────────────────────────────────────────────────────────
 
 // A full-scale 1 kHz sine at 48 kHz on each scale: the loudest row per column, and its level

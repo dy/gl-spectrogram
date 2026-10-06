@@ -73,6 +73,8 @@ Method | Does
 `sg.clear()` | Clears the viewport to transparent.
 `sg.push(samples)` | Appends samples.
 `sg.set(samples, offset)` | Writes samples from `offset`, extending the data if needed; a gap before `offset` reads as silence.
+`sg.spectra(levels, { size, hop, at, length })` | Spectra of samples held elsewhere: per column of `hop` samples, the loudest each bin reaches over its Hann frames of `size`, a byte per bin, `(dB + 150) · 1.6`. Where the samples a column reads are not held, it draws from these, as the samples would zoomed out (0.3 dB apart at the median); `set()` writes samples over them for the exact picture. Hours of audio with the samples only where it is zoomed in.
+`sg.drop(from, to)` | Lets go of the samples of the whole 64K chunks within `[from, to)`; the spectra given draw them again.
 `sg.pick(x, y)` | The cell at `x`, `y` CSS px from the viewport's top-left: `{ from, to, low, high, level }`, samples `[from, to)`, Hz `[low, high)`, dB. `null` off the data.
 `sg.pick(x)` | The column at `x`: `{ from, to, levels }`, a level per row from the bottom.
 `sg.destroy()` | Releases the textures, the data and the event listeners.

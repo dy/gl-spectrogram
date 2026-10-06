@@ -184,6 +184,14 @@ test('refining: zoomed out, a render costs about a frame per pixel column; pendi
   assert.equal(r.narrow.pending, false, `a 4 px viewport settles too, in ${r.narrow.renders} renders`)
 })
 
+test('spectra given: a sound held as its spectra draws from them, zoomed out and in; its samples set over a part draw as data does there; dropped, the spectra again', async () => {
+  let res = await run('spectral', { seed: 11 })
+  assert.ok(res.cells > 1e4, `${res.cells} cells checked`)
+  // zoomed out, as the samples draw it, its frames placed apart: 0.3 dB the median, 3.8 the 95th percentile here
+  assert.ok(res.alike.median < 1 && res.alike.p95 < 6, `as the samples draw it: ${JSON.stringify(res.alike)} dB`)
+  assert.equal(res.nbad, 0, JSON.stringify(res.bad))
+})
+
 test('streaming: push() and set() give what the data given at once gives', async () => {
   let r = await run('edits')
   assert.ok(r.worst < .01, `largest difference ${r.worst} dB`)
