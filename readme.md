@@ -2,9 +2,9 @@
 
 WebGL2 spectrogram renderer for audio editors. Each render computes what the view shows on the GPU: an FFT frame per device-pixel column, reassigned, so a steady tone draws one pixel row thin and a click one pixel column thin. Zooms, pans and frequency zooms draw sharp in the frame they happen, over an hour of 48 kHz audio.
 
-[<img src="example/preview.png" width="968" alt="24 seconds of plucked strings and percussion: partials as short horizontal lines, drum hits as thin columns">](https://dy.github.io/gl-spectrogram/)
+[<img src="example/preview.png" width="968" alt="Two minutes of Bach's first cello suite prelude in two lanes: arpeggios as slanted ladders of partials over a low open string">](https://dy.github.io/gl-spectrogram/)
 
-[Demo](https://dy.github.io/gl-spectrogram/): plucked strings and percussion, birdsong, voice, sweeps, chords and clicks, or your own audio. Play, stream; wheel zooms time, Shift+wheel frequency, drag pans.
+[Demo](https://dy.github.io/gl-spectrogram/): a blackbird, Bach's cello, Chopin, Vivaldi, Beethoven and a poem read aloud; live radio and the microphone, recorded as they sound; test signals, or your own audio. Wheel zooms time, Shift+wheel frequency, drag pans. The [v1 demo](https://dy.github.io/gl-spectrogram/example/old.html) runs on v2 too.
 
 ## Usage
 
@@ -131,7 +131,7 @@ v1 drew magnitude frames pushed to it one at a time, scrolling. v2 computes the 
 
 * `npm test`: every cell of 20 views against a CPU reference in doubles (three FFTs a frame, the reassignment formulas as written), within 0.01 dB, over log, mel and lin scales, zoomed bands, FFT sizes 256 to 2048, refined zoomed-out columns, offset 10⁹ and DPR 2; a full-scale sine on the row each scale's formula gives at 0 dB; a click on its column from 0.3 to 2880 samples per px; pans, `push()`/`set()` and refinement against fresh views; previews, levels, gaps, the color ramp's lightness, colormaps, half floats, stale texture layers, context loss, an hour of audio and the API contract. Headless Chromium through Playwright; `npx playwright install chromium` if it is missing.
 * `npm run bench`: the table above.
-* Demo: any static server at the repo root, e.g. `npx serve`, then open `/example/`. The previous large-audio demo is at `/example/stress.html`; `?minutes=60` makes an hour.
+* Demo: any static server at the repo root, e.g. `npx serve`, then open `/example/`. `?source=cello` opens a recording, `wqxr` the radio, `mic` the microphone. The first v2 demo is at `/example/stress.html` (`?minutes=60` makes an hour), the v1 demo at `/example/old.html`.
 
 ## License
 

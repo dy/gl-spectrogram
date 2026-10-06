@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="gl-spectrogram's 2016 demo rebuilt on v2: a page-wide spectrogram scrolling as the sound plays.">
+<title>gl-spectrogram demo</title>
+<style>
+  /* start-app's look (audio-lab/start-app, 2016): text in the colormap's top color over its floor color */
+  * { box-sizing: border-box }
+  html, body { margin: 0; height: 100%; overflow: hidden }
+  body { font-family: sans-serif; color: rgb(var(--c)); background: var(--bg) }
+  ::selection { background: rgba(var(--c), .25) }
+  a, button, select { color: inherit }
+  button { background: none; border: 0; padding: 0; font: inherit; cursor: pointer }
+  :focus-visible { outline: 2px solid; outline-offset: 2px }
+  .full { position: fixed; inset: 0; width: 100%; height: 100%; display: block }
+  i { display: inline-block; width: 1.5rem; height: 1.5rem; vertical-align: top; fill: currentColor }
+  i svg { width: 100%; height: 100% }
+
+  .source, .status { position: fixed; top: .75rem; left: .75rem; line-height: 1.5rem; font-size: .9rem; white-space: nowrap; z-index: 2 }
+  .status { left: auto; right: .75rem }
+  .link { font-weight: bold; text-decoration: none; box-shadow: 0 2px rgba(var(--c), .25); cursor: pointer }
+  .link:hover, .pick:focus-within .link { box-shadow: 0 2px rgb(var(--c)) }
+  .pick:focus-within { outline: 2px solid; outline-offset: 2px }
+  .cut { display: inline-block; max-width: 30vw; vertical-align: top; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+  #who { max-width: 20vw }
+  .pick { position: relative; display: inline-block; vertical-align: top }
+  .pick select { position: absolute; inset: 0; width: 100%; opacity: 0; cursor: pointer; font: inherit }
+  .pick select:focus-visible { outline: none }
+  .pick option { color: #000; background: #fff }
+  .note { font-size: .7rem; opacity: .75; text-decoration: none }
+  .note:hover { text-decoration: underline }
+  .fps canvas { width: 2rem; height: 1rem; margin: 0 .15rem -.15rem 0; background: rgba(var(--c), .1) }
+  .menu { margin-left: .5rem }
+  .progress { position: fixed; top: 0; left: 0; width: 0; height: .2rem; background: currentColor; z-index: 3 }
+  .github { position: fixed; bottom: .75rem; right: .75rem; z-index: 2 }
+
+  .params { position: fixed; bottom: 0; left: 0; right: 0; max-height: 100%; overflow: auto; display: flow-root; padding: .5rem 0 .5rem .75rem; line-height: 1.5; z-index: 3; background: linear-gradient(rgba(var(--i), .5), rgba(var(--i), .75)) }
+  .params[hidden] { display: none }
+  .close { position: absolute; top: 0; right: 0; width: 2rem; height: 2rem; font-size: 1rem }
+  .param { height: 2rem; width: 15rem; margin-right: 2.25rem; float: left }
+  .param label { display: inline-block; width: 33.3%; padding-right: 1rem; font-size: .75rem; line-height: 2rem; text-align: right; vertical-align: top }
+  .param input, .param select { width: 66.6%; height: 2rem; margin: 0; padding: 0; border: 0; font-size: 1rem; background: none; vertical-align: top; accent-color: rgb(var(--c)) }
+  .param option { color: #000; background: #fff }
+  .param [type=checkbox] { width: 1.5rem; height: 1.5rem; margin-top: .25rem }
+
+  body.drop::after { content: ''; position: fixed; inset: 0; border: .2rem dashed; z-index: 4; pointer-events: none }
+
+  @media (max-width: 42rem) {
+    .source { right: .75rem; text-align: center; white-space: normal }
+    #who { max-width: 30vw }
+    .status { top: auto; bottom: .75rem; left: .75rem; right: .75rem; text-align: center }
+    .params { padding-right: 2.25rem }
+    .param { width: 100%; margin-right: 0; float: none }
+  }
+</style>
+<body>
+<canvas class="full" id="spectrogram" aria-label="Spectrogram of the playing sound, scrolling from the left"></canvas>
+<canvas class="full" id="lines" aria-hidden="true"></canvas>
+<div class="progress" id="progress"></div>
+
+<div class="source">
+  <i id="icon"></i>
+  <label class="pick"><span class="link"><span class="cut" id="title"></span></span><select id="source" aria-label="Source"></select></label>
+  <span id="credit" hidden>by <a class="link" id="author" target="_blank" rel="noopener"><span class="cut" id="who"></span></a> <a class="note" id="license" target="_blank" rel="noopener"></a></span>
+  <button id="play" aria-label="Play"><i></i></button>
+  <input type="file" id="file" accept="audio/*" hidden>
+</div>
+
+<div class="status">
+  <span class="fps"><canvas id="fps" width="32" height="16"></canvas>fps <span id="fps-value">60.0</span></span><button class="menu" id="menu" aria-label="Settings" aria-expanded="false" aria-controls="params"><i></i></button>
+</div>
+
+<a class="github" href="https://github.com/dy/gl-spectrogram" aria-label="gl-spectrogram on GitHub"><i id="github"></i></a>
+
+<form class="params" id="params" hidden>
+  <button type="button" class="close" id="close" aria-label="Close settings">✕</button>
+  <div class="param"><label for="fill">Fill</label><select id="fill"><option>palette</option></select></div>
+  <div class="param"><label for="inversed">Inversed</label><input type="checkbox" id="inversed"></div>
+  <div class="param"><label for="logarithmic">Logarithmic</label><input type="checkbox" id="logarithmic" checked></div>
+  <div class="param"><label for="grid">Grid</label><input type="checkbox" id="grid" checked></div>
+  <div class="param"><label for="speed">Speed</label><input type="range" id="speed" min="1" max="250" value="100" title="100"></div>
+  <div class="param"><label for="minDecibels">MinDecibels</label><input type="range" id="minDecibels" min="-100" max="0" value="-100" title="-100"></div>
+  <div class="param"><label for="maxDecibels">MaxDecibels</label><input type="range" id="maxDecibels" min="-100" max="0" value="0" title="0"></div>
+</form>
+
+<script type="module" src="./old.js"></script>
