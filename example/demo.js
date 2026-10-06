@@ -78,8 +78,14 @@ function stopLive() {
   if (n) audio(wav(mix, rate)); else releaseAudio()
   status()
 }
-// Channels that are all the same, as in a mono recording published as stereo, draw as one
-const distinct = data => data.filter((d, c) => !c || d.some((v, i) => v !== data[0][i]))
+// Channels within -30 dB of the first, as a mono recording published as stereo (an MP3's joint stereo leaves them -40 dB
+// apart), draw as one
+const distinct = data => data.filter((d, c) => {
+  if (!c) return true
+  let diff = 0, sum = 0
+  for (let i = 0; i < d.length; i++) { diff += (d[i] - data[0][i]) ** 2; sum += data[0][i] ** 2 }
+  return diff > sum * 1e-3
+})
 // A recording (downloaded once), live radio, the microphone or a test signal
 async function choose() {
   const id = ++task, value = $('source').value, rec = recordings.find(r => r.id === value), station = streams.find(s => s.id === value)
