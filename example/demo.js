@@ -1,12 +1,13 @@
 // gl-spectrogram's demo, on gl-spectrum's v3 page: sound comes in from the right as it plays, as on a recorder; drag or
 // scroll back through it, wheel or pinch across to zoom time, Shift+wheel or a vertical pinch to zoom frequency
 import Spectrogram, { scales } from '../index.js'
-import { $, clamp, css, alpha, palette, picker, sound, gestures, timeline, rules, pretty, step } from './app.js'
+import { $, clamp, css, alpha, palette, picker, sound, gestures, timeline, glide, rules, pretty, step } from './app.js'
 
-const SPAN = 8, KEEP = 2 ** 24 // seconds in view at first; samples kept (5.8 min at 48 kHz), past that the oldest go
+const SPAN = 20, KEEP = 2 ** 24 // seconds in view at first; samples kept (5.8 min at 48 kHz), past that the oldest go
 const canvas = $('chart'), sg = new Spectrogram(canvas)
 let rate = 48000, buf = null, length = 0, origin = 0, view = timeline(rate * SPAN)
 let look = null, scale = 'log', band = null, w = 0, h = 0, pr = 0, dirty = true
+const newest = glide()
 
 const ui = picker(start)
 const audio = sound({ chunk: take, state: on => { ui.playing(on); if (on) $('hint').hidden = true } })
@@ -54,7 +55,7 @@ function bandView(fn) {
 }
 gestures(canvas, {
   pan(dx, dy) {
-    view.pan(-dx / w * view.span, length)
+    view.pan(-dx / w * view.span, newest(length, rate, audio.playing))
     if (dy) bandView((a, b) => [a + dy / h * (b - a), b - a])
     dirty = true
   },
@@ -123,9 +124,9 @@ $('play').onclick = () => audio.element || audio.playing ? audio.toggle() : star
 
 requestAnimationFrame(function frame() {
   requestAnimationFrame(frame)
-  if (!dirty && !sg.pending) return
+  if (!dirty && !sg.pending && !audio.playing) return
   dirty = false
-  const range = view.range(length)
+  const range = view.range(newest(length, rate, audio.playing))
   sg.update({ range, band, scale }).clear().render()
   rule(range)
   const el = audio.element

@@ -41,7 +41,8 @@ test('demo: sound comes in from the right as it plays; drag back, zoom time and 
 
     const box = await page.locator('#chart').boundingBox(), shot = () => page.locator('#chart').evaluate(c => c.toDataURL())
     await page.locator('#play').click(); await page.waitForFunction(() => document.getElementById('play').getAttribute('aria-label') === 'Play')
-    let s = await shot(); await page.mouse.move(box.x + 500, box.y + 300); await page.mouse.wheel(0, -400); await page.waitForTimeout(100); assert.notEqual(await shot(), s, 'zoomed in time')
+    let s = await shot(); await page.mouse.move(box.x + 500, box.y + 300); for (let i = 0; i < 3; i++) await page.mouse.wheel(0, -400) // in from 20 s to under the second of sound there is
+    await page.waitForTimeout(100); assert.notEqual(await shot(), s, 'zoomed in time')
     s = await shot()
     await page.mouse.move(box.x + 300, box.y + 300); await page.mouse.down(); await page.mouse.move(box.x + 600, box.y + 300, { steps: 5 }); await page.mouse.up()
     await page.waitForTimeout(100); assert.notEqual(await shot(), s, 'dragged back in time')
