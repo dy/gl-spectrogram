@@ -5,6 +5,8 @@ export type Scale = 'log' | 'mel' | 'erb' | 'lin'
 /** How a column draws its frames: the spectrum as it is, reassigned in time and frequency, squeezed in frequency, of a
  *  length by band, through several tapers, or as the Wigner–Ville distribution */
 export type Method = 'frames' | 'reassigned' | 'synchrosqueezed' | 'bands' | 'tapers' | 'wigner'
+/** How a zoomed-out column joins its frames: their mean power, reading as zoomed in, or the loudest, a click at its level */
+export type Combine = 'mean' | 'max'
 
 export interface Options {
   /** Mono samples; replaces all data. A Float32Array is referenced, not copied; other array-likes are converted. */
@@ -17,6 +19,8 @@ export interface Options {
   scale?: Scale | null
   /** How a column draws its frames. null: reassigned. */
   method?: Method | null
+  /** How a column wider than half a window joins its frames, and the spectra given it spans. null: mean. */
+  combine?: Combine | null
   /** Visible [low, high] in Hz, bottom to top. null: the scale's floor to Nyquist. */
   band?: [number, number] | null
   /** [x, y, width, height] in CSS px, top-left origin. null: the whole canvas. */
@@ -93,9 +97,10 @@ export default class Spectrogram {
   /** Write samples at offset, extending the data if needed; a gap before offset reads as silence */
   set(samples: ArrayLike<number>, offset?: number): this
   /**
-   * Spectra of samples held elsewhere (hours of audio): a column after another from column `at`, each `hop` samples, the
-   * loudest each bin reaches over its Hann frames of `size` (every size / 2), a byte per bin to Nyquist: (dB + 150) · 1.6,
-   * 0 silence. Columns whose frames read samples not held draw from them; set() writes samples over them.
+   * Spectra of samples held elsewhere (hours of audio): a column after another from column `at`, each `hop` samples, each
+   * bin's power over its Hann frames of `size` (every size / 2) joined as `combine` joins a column's frames (their mean, or
+   * the loudest), a byte per bin to Nyquist: (dB + 150) · 1.6, 0 silence. Columns whose frames read samples not held draw
+   * from them; set() writes samples over them.
    */
   spectra(levels: Uint8Array, options: { size: number, hop: number, at?: number, length?: number }): this
   /** Let go of the samples of the whole 65536-sample chunks within [from, to); the spectra given draw them again */

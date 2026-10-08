@@ -29,6 +29,11 @@ test('cells: log scale, 0.2 to 450 samples per px, frames refined past 128, with
   assert.ok(res.cells > 10000, `cells compared: ${res.cells}`)
 })
 
+test('cells: combine max, refined columns the loudest of their frames, within 0.01 dB of the reference in doubles', async () => {
+  let spans = [1100, 6000, 24000], list = spans.map((s, i) => ({ range: [1000 + i * 1777.3, 1000 + i * 1777.3 + s] }))
+  for (let method of [null, 'frames']) clean(await run('views', { seed: 1, method, combine: 'max', list: [...list, { range: [-24000, 48000], size: 256 }] }))
+})
+
 test('cells: mel, erb and lin scales, zoomed bands, other FFT sizes', async () => {
   let list = [
     { range: [2000, 8000], scale: 'mel' },
@@ -133,6 +138,13 @@ test('click: one sample lands on the column holding it, at 0.3 to 2880 samples p
 // nearest it under Hann or the lag window. Three sine tapers squared sum to 3/2 − ½ Σ cos(2πjn/L), 2 at the frame's
 // center and 2.16 at n = .21 L: a click reads 0.33 dB louder through frames holding it off center, so its own column is
 // within half a dB of the loudest.
+// 2880 samples a column take 13 frames of 512: their mean holds the click in one of them, the loudest holds it whole
+test('click: with combine max, on the column holding it, at the level of the frame that holds it', async () => {
+  let [max] = await run('click', { k: 48000 + 777, spans: [96000 * 6], combine: 'max' }), [mean] = await run('click', { k: 48000 + 777, spans: [96000 * 6] })
+  for (let r of [max, mean]) assert.ok(r.holds && r.others < r.peak - 30, `[${r.from}, ${r.to}), ${r.peak} dB, others ${r.others}`)
+  assert.ok(max.peak - mean.peak > 8, `the loudest ${max.peak.toFixed(1)} dB, the mean ${mean.peak.toFixed(1)}`)
+})
+
 test('click: by every method, on the column holding it', async () => {
   for (let method of ['frames', 'synchrosqueezed', 'bands', 'tapers', 'wigner']) {
     let res = await run('click', { k: 48000 + 777, spans: [60, 200, 2000, 30000], method })
@@ -170,6 +182,20 @@ test('pans: cached columns plus new ones draw what a fresh view draws; an unchan
   }
 })
 
+// Noise zoomed out as frames come, by the median cell: their mean keeps the mean power, so the frames' picture (each
+// cell the highest across its row's bins) holds within half a dB, at any zoom; reassigned cells, sparser, rise only as
+// their speckle averages out (a noise bin's median is ln 2, 1.6 dB, under its mean), well under what the loudest of the
+// frames adds, which grows with their number (frames of 512: 15 at 4800 samples a column)
+test('steady: zoomed out, noise reads as it does at the first render and at other zooms', async () => {
+  let frames = await run('steady', { method: 'frames' })
+  for (let r of frames) assert.ok(Math.abs(r.settled - r.first) < .5 && Math.abs(r.settled - frames[0].settled) < .5, `frames, ${r.spp} samples a column: ${r.first.toFixed(1)} dB first, ${r.settled.toFixed(1)} settled, ${frames[0].settled.toFixed(1)} at 64`)
+  for (let method of [null, 'frames', 'synchrosqueezed']) {
+    let mean = (await run('steady', { method })).at(-1), max = (await run('steady', { method, combine: 'max' })).at(-1)
+    let rise = mean.settled - mean.first, most = max.settled - max.first
+    assert.ok(rise < 3.5 && most > 4 && rise < most / 2.5, `${method}: the mean rises ${rise.toFixed(1)} dB as frames come, the loudest ${most.toFixed(1)}`)
+  }
+})
+
 // A render transforms a frame per new column, then adds frames to columns while it has spent under a frame per 2 px or
 // 256 frames, whichever is more, each run with its margin frames
 test('refining: zoomed out, a render costs about a frame per pixel column; pending until every sample is in a frame', async () => {
@@ -185,10 +211,14 @@ test('refining: zoomed out, a render costs about a frame per pixel column; pendi
 })
 
 test('spectra given: a sound held as its spectra draws from them, zoomed out and in; its samples set over a part draw as data does there; dropped, the spectra again', async () => {
+  let max = await run('spectral', { seed: 11, combine: 'max' })
+  assert.equal(max.nbad, 0, JSON.stringify(max.bad))
+  assert.ok(max.alike.median < 1 && max.alike.p95 < 6, `combine max, as the samples draw it: ${JSON.stringify(max.alike)} dB`)
   let res = await run('spectral', { seed: 11 })
   assert.ok(res.cells > 1e4, `${res.cells} cells checked`)
-  // zoomed out, as the samples draw it, its frames placed apart: 0.3 dB the median, 3.8 the 95th percentile here
-  assert.ok(res.alike.median < 1 && res.alike.p95 < 6, `as the samples draw it: ${JSON.stringify(res.alike)} dB`)
+  // zoomed out, as the samples draw it, its frames placed apart: their mean 0.2 dB the median, 0.8 the 95th percentile
+  // here; the loudest of them, 0.3 and 3.8
+  assert.ok(res.alike.median < .5 && res.alike.p95 < 2, `as the samples draw it: ${JSON.stringify(res.alike)} dB`)
   assert.equal(res.nbad, 0, JSON.stringify(res.bad))
 })
 

@@ -181,8 +181,9 @@ function bands({ get, n, N, H, rate, edge, qa, qb, sums }, by) {
 // The spectrogram of get(i) by `method` for a view of W × H, in doubles. Conventions as index.js promises them: column
 // q spans samples [q·cw − .5, (q+1)·cw − .5), cw = max(samples per px, 1); a column has `sub` frames, the fewest odd
 // number with hops of at most N/2, frame i centered on round((q + (i + .5) / sub)·cw − .5); a cell sums what each frame
-// index gives it and keeps the largest of those sums. Returns the column under each pixel and their cells.
-export function reference(get, n, { range: [from, to], W, H, band, scale, rate, N, method = 'reassigned' }) {
+// index gives it and keeps the mean of those sums, or the largest (`combine`). Returns the column under each pixel and
+// their cells.
+export function reference(get, n, { range: [from, to], W, H, band, scale, rate, N, method = 'reassigned', combine = 'mean' }) {
   let spp = (to - from) / W, cw = Math.max(spp, 1), s = (from + .5) / cw, q0 = Math.floor(s), f0 = s - q0, ratio = spp / cw
   let cols = Array.from({ length: W }, (_, px) => q0 + Math.floor(f0 + (px + .5) * ratio))
   let qa = cols[0], qb = cols[W - 1] + 1, m = method === 'reassigned' ? Math.ceil((N / 2 + 1) / cw) + 1 : 0, w = WARP[scale]
@@ -192,7 +193,7 @@ export function reference(get, n, { range: [from, to], W, H, band, scale, rate, 
   for (let f = 0; f < sub; f++) {
     sums.fill(0)
     for (let q = Math.max(qa, 0) - m; q < Math.min(qb, last) + m; q++) frame(Math.round((q + (f + .5) / sub) * cw - .5), q)
-    for (let c = 0; c < cells.length; c++) cells[c] = Math.max(cells[c], sums[c])
+    for (let c = 0; c < cells.length; c++) cells[c] = combine === 'max' ? Math.max(cells[c], sums[c]) : cells[c] + sums[c] / sub
   }
   return { cols, qa, last, cells, cw, sub, loose }
 }
@@ -232,7 +233,7 @@ export function compare(sg, get, view, pr = 1, depth = 60) {
 }
 
 // Many views of fixed data, each against the reference
-export function views({ seed, W = 160, H = 96, list, pr = 1, far = 0, method = null, depth = 60 }) {
+export function views({ seed, W = 160, H = 96, list, pr = 1, far = 0, method = null, combine = null, depth = 60 }) {
   let r = random(seed), rate = 48000, n = rate / 2, d = new Float32Array(n)
   // two tones, a chirp, clicks, noise at -40 dB
   for (let i = 0; i < n; i++) {
@@ -246,9 +247,9 @@ export function views({ seed, W = 160, H = 96, list, pr = 1, far = 0, method = n
   let out = { views: 0, cells: 0, moved: 0, bad: [] }
   for (let v of list) {
     let scale = v.scale ?? 'log', band = v.band ?? [LOW[scale], rate / 2], range = v.range.map(x => x + far)
-    sg.update({ range, band: v.band ?? null, scale, size: v.size ?? 512, method }).render()
+    sg.update({ range, band: v.band ?? null, scale, size: v.size ?? 512, method, combine }).render()
     while (sg.pending) sg.render()
-    let res = compare(sg, get, { range, W, H, band, scale, rate, N: sg.size, method: method ?? 'reassigned' }, pr, depth)
+    let res = compare(sg, get, { range, W, H, band, scale, rate, N: sg.size, method: method ?? 'reassigned', combine: combine ?? 'mean' }, pr, depth)
     out.views++; out.cells += res.cells; out.moved += res.moved; out.bad.push(...res.bad)
   }
   c.remove()
@@ -257,23 +258,25 @@ export function views({ seed, W = 160, H = 96, list, pr = 1, far = 0, method = n
 
 // ── spectra given ─────────────────────────────────────────────────────
 
-// What a host holding the samples elsewhere gives (spectra()): per column of `hop` samples, the loudest each bin reaches
-// over its Hann frames of N, every N/2 samples centered on multiples of N/2 from N/2, |X|² over (N/4)², as a byte
-// (dB + 150) · 1.6, 0 for silence
-export function spectraOf(get, n, N, hop) {
-  let bins = N / 2 + 1, cols = Math.ceil(n / hop), out = new Uint8Array(cols * bins), most = new Float64Array(cols * bins)
+// What a host holding the samples elsewhere gives (spectra()): per column of `hop` samples, each bin's mean power over
+// its Hann frames of N, or the loudest (`combine`), every N/2 samples centered on multiples of N/2 from N/2, |X|² over
+// (N/4)², as a byte (dB + 150) · 1.6, 0 for silence
+export function spectraOf(get, n, N, hop, combine = 'mean') {
+  let bins = N / 2 + 1, cols = Math.ceil(n / hop), out = new Uint8Array(cols * bins), most = new Float64Array(cols * bins), count = new Float64Array(cols)
   for (let t = N / 2; t - N / 2 < n; t += N / 2) {
     let o = Math.floor(t / hop)
     if (o >= cols) break
     let [re, im] = spectrum(get, n, t, N, hann(N))
-    for (let k = 0; k < bins; k++) most[o * bins + k] = Math.max(most[o * bins + k], (re[k] * re[k] + im[k] * im[k]) / (N / 4) ** 2)
+    count[o]++
+    for (let k = 0; k < bins; k++) { let p = (re[k] * re[k] + im[k] * im[k]) / (N / 4) ** 2; most[o * bins + k] = combine === 'max' ? Math.max(most[o * bins + k], p) : most[o * bins + k] + p }
   }
+  if (combine !== 'max') for (let i = 0; i < most.length; i++) most[i] /= count[Math.floor(i / bins)] || 1
   for (let i = 0; i < out.length; i++) out[i] = most[i] > 0 ? Math.max(1, Math.min(255, Math.round((10 * Math.log10(most[i]) + 150) * 1.6))) : 0
   return out
 }
-// The cells of a view drawn from levels alone, in doubles: column q the loudest of the given columns its samples span
-// (the one under its middle, when narrower than theirs), each read across rows as frames are
-function given(levels, N, hop, cols, { range: [from, to], W, H, band, scale, rate }) {
+// The cells of a view drawn from levels alone, in doubles: column q the mean, or the loudest, of the given columns its
+// samples span (the one under its middle, when narrower than theirs), each read across rows as frames are
+function given(levels, N, hop, cols, { range: [from, to], W, H, band, scale, rate, combine = 'mean' }) {
   let spp = (to - from) / W, cw = Math.max(spp, 1), s = (from + .5) / cw, q0 = Math.floor(s), f0 = s - q0, ratio = spp / cw
   let w = WARP[scale], b0 = w(band[0]), bk = H / (w(band[1]) - w(band[0])), edge = r => UNWARP[scale](b0 + r / bk), bins = N / 2 + 1, hz = rate / N
   let P = o => Float64Array.from({ length: bins }, (_, k) => { let q = levels[o * bins + k]; return q ? 10 ** ((q / 1.6 - 150) / 10) : 0 })
@@ -281,23 +284,24 @@ function given(levels, N, hop, cols, { range: [from, to], W, H, band, scale, rat
     let q = q0 + Math.floor(f0 + (px + .5) * ratio), a = Math.floor((q * cw - .5) / hop), b = Math.ceil(((q + 1) * cw - .5) / hop)
     if (b - a < 1) { a = Math.floor(((q + .5) * cw - .5) / hop); b = a + 1 }
     let cells = new Float64Array(H)
-    for (let o = Math.max(a, 0); o < Math.min(b, cols); o++) { let p = P(o); for (let r = 0; r < H; r++) cells[r] = Math.max(cells[r], across(p, N / 2, edge(r) / hz, edge(r + 1) / hz)) }
+    let o0 = Math.max(a, 0), o1 = Math.min(b, cols)
+    for (let o = o0; o < o1; o++) { let p = P(o); for (let r = 0; r < H; r++) { let v = across(p, N / 2, edge(r) / hz, edge(r + 1) / hz); cells[r] = combine === 'max' ? Math.max(cells[r], v) : cells[r] + v / (o1 - o0) } }
     return cells
   })
 }
 // A sound held only as its spectra, zoomed out past their columns and in within them; then a part of its samples set, its
 // columns from them as data given whole draws them; then let go, from the spectra again. Each view against its reference
-export function spectral({ seed, W = 160, H = 96 }) {
+export function spectral({ seed, W = 160, H = 96, combine = 'mean' }) {
   let r = random(seed), rate = 48000, n = 1 << 20, N = 1024, hop = 4096, d = new Float32Array(n)
   for (let i = 0; i < n; i++) { let t = i / rate; d[i] = (i < n / 2 ? .5 : .05) * Math.sin(2 * Math.PI * 1000 * t) + .2 * Math.sin(2 * Math.PI * (300 + 40 * t) * t) + .01 * (r() * 2 - 1) }
-  let get = i => d[i], levels = spectraOf(get, n, N, hop), cols = Math.ceil(n / hop), out = { cells: 0, bad: [] }
-  let sg = new Spectrogram(canvas(W, H), { pixelRatio: 1, sampleRate: rate, size: N, method: 'frames' })
+  let get = i => d[i], levels = spectraOf(get, n, N, hop, combine), cols = Math.ceil(n / hop), out = { cells: 0, bad: [] }
+  let sg = new Spectrogram(canvas(W, H), { pixelRatio: 1, sampleRate: rate, size: N, method: 'frames', combine })
   sg.spectra(levels.subarray(0, 100 * (N / 2 + 1)), { size: N, hop })
   sg.spectra(levels.subarray(100 * (N / 2 + 1)), { size: N, hop, at: 100, length: n })
   if (sg.length !== n) out.bad.push({ length: sg.length })
   let check = (range, want) => {
     sg.update({ range }).render()
-    let band = [20, rate / 2], ref = want ?? given(levels, N, hop, cols, { range, W, H, band, scale: 'log', rate })
+    let band = [20, rate / 2], ref = want ?? given(levels, N, hop, cols, { range, W, H, band, scale: 'log', rate, combine })
     for (let px = 0; px < W; px++) {
       let c = sg.pick(px + .5)
       if (!c) { if (ref[px].some(v => v > 1e-12)) out.bad.push({ range, px, got: null }); continue }
@@ -312,7 +316,7 @@ export function spectral({ seed, W = 160, H = 96 }) {
   let views = [[0, n], [-1e5, n + 1e5], [2e5, 2e5 + 160 * 6000], [5e5, 5e5 + 160 * 300], [3e5, 3e5 + 160 * 40]]
   for (let v of views) check(v)
   // zoomed out, much as the samples draw it: their frames placed apart, each level to a byte's step
-  let full = new Spectrogram(canvas(W, H), { pixelRatio: 1, sampleRate: rate, size: N, method: 'frames', data: d }), diffs = []
+  let full = new Spectrogram(canvas(W, H), { pixelRatio: 1, sampleRate: rate, size: N, method: 'frames', combine, data: d }), diffs = []
   full.update({ range: [0, n] }).render()
   while (full.pending) full.render()
   sg.update({ range: [0, n] }).render()
@@ -326,7 +330,7 @@ export function spectral({ seed, W = 160, H = 96 }) {
   // a part's samples: a view inside it as the data given whole draws it
   let part = [5 * 65536, 9 * 65536], inside = [5.5 * 65536, 5.5 * 65536 + 160 * 300]
   sg.set(d.subarray(...part), part[0])
-  let whole = new Spectrogram(canvas(W, H), { pixelRatio: 1, sampleRate: rate, size: N, method: 'frames', data: d })
+  let whole = new Spectrogram(canvas(W, H), { pixelRatio: 1, sampleRate: rate, size: N, method: 'frames', combine, data: d })
   whole.update({ range: inside }).render()
   while (whole.pending) whole.render()
   sg.update({ range: inside }).render()
@@ -357,10 +361,10 @@ export function sine({ scale, band, W = 64, H = 200, amp = 1, f = 1000, size = n
 }
 
 // One click, at several zooms: the column holding its sample is the loudest by far
-export function click({ k, spans, W = 200, H = 64, method = null }) {
+export function click({ k, spans, W = 200, H = 64, method = null, combine = null }) {
   let rate = 48000, n = 96000, d = new Float32Array(n), out = []
   d[k] = 1
-  let c = canvas(W, H), sg = new Spectrogram(c, { pixelRatio: 1, sampleRate: rate, data: d, size: 512, method })
+  let c = canvas(W, H), sg = new Spectrogram(c, { pixelRatio: 1, sampleRate: rate, data: d, size: 512, method, combine })
   for (let span of spans) {
     let from = k - span * .37, renders = 1
     sg.update({ range: [from, from + span] }).render()
@@ -416,6 +420,23 @@ export function pans({ method = null } = {}) {
   let again = draws
   for (let el of document.querySelectorAll('canvas')) el.remove()
   return { worst: out, runs, again }
+}
+
+// White noise zoomed out past half a window a column (frames of 512, 256 samples): the median cell, in dB, at a view's
+// first render and once every sample is in a frame, at several zooms
+export function steady({ combine = null, method = null, spans = [64, 600, 4800] }) {
+  let rate = 48000, r = random(5), n = rate * 30, d = Float32Array.from({ length: n }, () => (r() - .5) * .06), W = 200, H = 64
+  let sg = new Spectrogram(canvas(W, H), { pixelRatio: 1, sampleRate: rate, data: d, size: 512, method, combine, levels: [-150, 0] })
+  let median = () => { let all = []; for (let x = 0; x < W; x++) all.push(...sg.pick(x + .5).levels); all.sort((a, b) => a - b); return all[all.length >> 1] }
+  let out = spans.map(spp => {
+    let from = n / 2 - spp * W / 2
+    sg.update({ range: [from, from + spp * W] }).render()
+    let first = median(), renders = 1
+    while (sg.pending && renders < 400) sg.render(), renders++
+    return { spp, first, settled: median(), renders }
+  })
+  sg.canvas.remove()
+  return out
 }
 
 // Zoomed out, a render transforms about a frame per pixel column: the first one frame per column, pending; later ones add
@@ -703,7 +724,7 @@ export function api() {
   c2d.getContext('2d')
   try { new Spectrogram(c2d); out.ctor = 'accepted' } catch (e) { out.ctor = e.name }
   let d = new Float32Array(7e4), sg = new Spectrogram(canvas(100, 20), { pixelRatio: 1, data: d })
-  for (let o of [{ range: [0, NaN] }, { band: [100, 50] }, { band: [0, 100] }, { viewport: [0, 0, 10] }, { size: 1000 }, { size: 8 }, { scale: 'bark' }, { method: 'cqt' }, { levels: [0, -10] }, { depth: -1 }, { sampleRate: 0 }, { pixelRatio: 'x' }, { gain: 'x' }, { color: 'not-a-color' }, { color: ['#000'] }])
+  for (let o of [{ range: [0, NaN] }, { band: [100, 50] }, { band: [0, 100] }, { viewport: [0, 0, 10] }, { size: 1000 }, { size: 8 }, { scale: 'bark' }, { method: 'cqt' }, { combine: 'sum' }, { levels: [0, -10] }, { depth: -1 }, { sampleRate: 0 }, { pixelRatio: 'x' }, { gain: 'x' }, { color: 'not-a-color' }, { color: ['#000'] }])
     try { sg.update(o); out.errors[JSON.stringify(o)] = 'accepted' } catch (e) { out.errors[JSON.stringify(o)] = e.name }
   try { sg.set([1], -1); out.offset = 'accepted' } catch (e) { out.offset = e.name }
   try { sg.set([1], 2 ** 31); out.far = 'accepted' } catch (e) { out.far = e.name }
@@ -714,7 +735,7 @@ export function api() {
   out.shared = d[3]
   sg.update({ range: [2, 4], band: [100, 1000], sampleRate: 8000, scale: 'mel' })
   out.getters = [sg.range, sg.band]
-  sg.update({ range: null, band: null, sampleRate: null, scale: null, method: null })
+  sg.update({ range: null, band: null, sampleRate: null, scale: null, method: null, combine: null })
   out.defaults = [sg.range, sg.band]
   out.size = sg.size
   sg.destroy()
