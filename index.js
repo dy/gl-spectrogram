@@ -27,6 +27,7 @@ const LEVEL = 1.6, FLOOR = 150      // spectra(): a byte per bin, (dB + FLOOR) �
 // 512 over 3 kHz, about 30 to 60 periods of each band's top
 const BANDS = [[200, 4], [500, 2], [1250, 1], [3000, .5], [Infinity, .25]]
 const TAPERS = 3                    // tapers: a tone's top flat over ±1 bin, noise's spread in dB halved (χ² of 6 degrees)
+const SWEEP = 8                     // reassigned frames reaching this many columns or more either side are swept (#sweep)
 
 const ATTRS = { premultipliedAlpha: true, preserveDrawingBuffer: true, antialias: false, depth: false, stencil: false }
 const WHITE = [1, 1, 1, 1], BLACK = [0, 0, 0, 1]
@@ -651,12 +652,21 @@ export default class Spectrogram {
     this.#fresh.fill(0, k * rows, (k + 1) * rows) // read as silence while it had no layer; its layer holds what it held
   }
 
-  // Samples [a, b) changed: forget every cached column their frames reach
+  // Samples [a, b) changed: forget every cached column their frames reach; a sweep keeps the frames and columns on the
+  // side of them it can, untouched by any frame reading them
   #invalidate(a, b) {
     for (let K of [...this.#views, this.#whole?.K]) {
       if (!K?.tags) continue
       let lo = Math.floor((a - K.reach + .5) / K.cw) - 1, hi = Math.floor((b + K.reach + .5) / K.cw) + 1, t = K.tags
       for (let i = 0; i < t.length; i++) if (t[i] >= lo && t[i] <= hi) t[i] = NaN
+      let s = K.swept, m = margin(K)
+      if (!s) continue
+      // the frames reading them: their centres within half a window of them
+      let f0 = Math.floor((a - K.half + .5) / K.cw) - 1, f1 = Math.floor((b + K.half + .5) / K.cw) + 2
+      if (f1 <= s.f0 || f0 >= s.f1) continue
+      if (f0 > s.f0) Object.assign(s, { f1: f0, v1: Math.min(s.v1, f0 - m) })
+      else if (f1 < s.f1) Object.assign(s, { f0: f1, v0: Math.max(s.v0, f1 + m) })
+      else s.v1 = s.v0
     }
   }
 
@@ -797,11 +807,15 @@ export default class Spectrogram {
     }
     K.tags = new Float64Array(cap).fill(NaN)
     K.done = new Uint16Array(cap)
+    K.swept = null
   }
 
   // Columns [a, b) of cache K computed from one frame each, or, where their frames read samples not held, from the
   // spectra given, whole at once; true if any had to be
   #need(K, a, b) {
+    let m = margin(K)
+    if (K.sub === 1 && m >= SWEEP && b - a + 2 * m <= K.cap && this.#held(K, a - 2 * m, b + 2 * m)) return this.#sweep(K, a, b, m)
+    if (K.swept) { K.swept = null; K.tags.fill(NaN) }
     let t = K.tags, d = K.done, mask = K.cap - 1, ran = false, given = q => !this.#held(K, q) && this.#given(K, q)
     for (let q = a; q < b;) {
       if (t[q & mask] === q) { q++; continue }
@@ -816,9 +830,56 @@ export default class Spectrogram {
     return ran
   }
 
-  // Whether the samples column q's frames read are all held (or past the data, silence)
-  #held(K, q) {
-    let a = Math.max(0, Math.floor((q * K.cw - K.reach) / C)), b = Math.min(Math.ceil(this.#n / C), Math.ceil(((q + 1) * K.cw + K.reach) / C))
+  // Columns [a, b) of K whole, reassigned and zoomed in, where a frame gives to the `m` columns either side of its own:
+  // computed column by column, each run would transform 2m frames more than it has columns, the same ones again each
+  // time a pan uncovers a few. Swept instead, each frame is transformed once and given to every cached column it
+  // reaches. K.swept { f0, f1, v0, v1 }: frames [f0, f1) given to columns [v0, v1), each column holding what all of them
+  // give it, so it is whole once every frame reaching it is among them, as a column computed at once. A pan transforms
+  // the frames it uncovers; columns new to the cache that frames already swept reach take those frames first (2m at most,
+  // on turning back); the cache keeps the columns nearest the way it goes. True if any frame had to be transformed.
+  #sweep(K, a, b, m) {
+    let fa = a - m, fb = b + m, w = b - a, s = K.swept
+    if (!s || fa > s.f1 + w || fb < s.f0 - w || s.v1 <= s.v0) {
+      if (!s) K.tags.fill(NaN)
+      s = K.swept = { f0: fa, f1: fa, v0: a, v1: a }
+    }
+    let ran = false, give = (f0, f1, lo, hi) => { if (f1 > f0 && hi > lo) { this.#run(K, lo, hi, 0, f0, f1, false); ran = true } }
+    // to the left: the columns it lacks there, then the frames before f0, onto them and the columns those reach
+    let v0 = fa < s.f0 ? fa - m : Math.min(s.v0, a)
+    if (v0 < s.v0) {
+      let v1 = Math.min(s.v1, v0 + K.cap), f1 = Math.min(s.f1, v1 + m)
+      this.#blank(K, v0, s.v0)
+      give(Math.max(s.f0, v0 - m), Math.min(f1, s.v0 + m), v0, s.v0)
+      give(Math.min(fa, s.f0), s.f0, v0, Math.min(v1, s.f0 + m))
+      Object.assign(s, { f0: Math.min(fa, s.f0), f1, v0, v1 })
+    }
+    // to the right, the same mirrored
+    let v1 = fb > s.f1 ? fb + m : Math.max(s.v1, b)
+    if (v1 > s.v1) {
+      let v0 = Math.max(s.v0, v1 - K.cap), f0 = Math.max(s.f0, v0 - m)
+      this.#blank(K, s.v1, v1)
+      give(Math.max(f0, s.v1 - m), Math.min(s.f1, v1 + m), s.v1, v1)
+      give(s.f1, Math.max(fb, s.f1), Math.max(v0, s.f1 - m), v1)
+      Object.assign(s, { f0, f1: Math.max(fb, s.f1), v0, v1 })
+    }
+    return ran
+  }
+
+  // Columns [lo, hi) of cache K emptied
+  #blank(K, lo, hi) {
+    let gl = this.gl, s0 = lo & (K.cap - 1), len = hi - lo
+    if (len <= 0) return
+    gl.bindFramebuffer(gl.FRAMEBUFFER, K.fbo)
+    gl.colorMask(true, true, true, true)
+    gl.enable(gl.SCISSOR_TEST)
+    gl.clearColor(0, 0, 0, 0)
+    for (let [x, w] of s0 + len <= K.cap ? [[s0, len]] : [[s0, K.cap - s0], [0, s0 + len - K.cap]]) { gl.scissor(x, 0, w, K.rows); gl.clear(gl.COLOR_BUFFER_BIT) }
+    gl.disable(gl.SCISSOR_TEST)
+  }
+
+  // Whether the samples columns [q, e)'s frames read are all held (or past the data, silence)
+  #held(K, q, e = q + 1) {
+    let a = Math.max(0, Math.floor((q * K.cw - K.reach) / C)), b = Math.min(Math.ceil(this.#n / C), Math.ceil((e * K.cw + K.reach) / C))
     for (let j = a; j < b; j++) if (!this.#chunks[j]) return false
     return true
   }
@@ -916,25 +977,28 @@ export default class Spectrogram {
   // first frame to its last, or the larger, so a click between frames reads at its level. Frames sit evenly across a column, the middle one first, each centered on a
   // sample t, which the column holds; a reassigned time t̂ (samples) goes to column floor((t̂ + .5) / cw), so sample k's
   // energy sits at k, as a waveform draws it.
-  #run(K, lo, hi, j) {
-    let gl = this.gl, c = contexts.get(gl), { N, cw, cap, rows, sub, method, rate } = K, m = margin(K), H = c.half ? HALF : 1
+  // Swept (#sweep): frames [from, to) given to columns [lo, hi) as they hold, not emptied first (`fresh` false).
+  #run(K, lo, hi, j, from = lo - margin(K), to = hi + margin(K), fresh = true) {
+    let gl = this.gl, c = contexts.get(gl), { N, cw, cap, rows, sub, method, rate } = K, H = c.half ? HALF : 1
     let squeeze = method === 'synchrosqueezed', into = j || squeeze ? temp(gl, c, cap, rows, squeeze) : K
     gl.bindFramebuffer(gl.FRAMEBUFFER, into.fbo)
     gl.colorMask(true, true, true, true)
     gl.disable(gl.BLEND)
-    gl.enable(gl.SCISSOR_TEST)
-    gl.clearColor(0, 0, 0, 0)
     let s0 = lo & (cap - 1), len = hi - lo, spans = s0 + len <= cap ? [[s0, len]] : [[s0, cap - s0], [0, s0 + len - cap]]
-    for (let [x, w] of spans) { gl.scissor(x, 0, w, rows); gl.clear(gl.COLOR_BUFFER_BIT) }
-    gl.disable(gl.SCISSOR_TEST)
+    if (fresh) {
+      gl.enable(gl.SCISSOR_TEST)
+      gl.clearColor(0, 0, 0, 0)
+      for (let [x, w] of spans) { gl.scissor(x, 0, w, rows); gl.clear(gl.COLOR_BUFFER_BIT) }
+      gl.disable(gl.SCISSOR_TEST)
+    }
     gl.bindVertexArray(c.vao)
 
     let S = scratch(gl, c, K.size), B = 2 * S.P, p = c.params, scattered = method === 'reassigned' || squeeze
     let at = ((sub - 1) / 2 + (j & 1 ? -(j + 1) / 2 : j / 2) + .5) / sub // frame j's place in its column, 0..1
     if (!scattered) edges(gl, c, K)
-    this.#spent += (len + 2 * m) * K.cost
-    for (let a = lo - m; a < hi + m; a += B) {
-      let nf = Math.min(B, hi + m - a), pairs = Math.ceil(nf / 2)
+    this.#spent += (to - from) * K.cost
+    for (let a = from; a < to; a += B) {
+      let nf = Math.min(B, to - a), pairs = Math.ceil(nf / 2)
       for (let i = 0; i < 2 * pairs; i++) {
         let t = i < nf ? Math.round((a + i + at) * cw - .5) : -2 * K.size, x = Math.floor(t / 65536)
         p[4 * i] = x; p[4 * i + 1] = t - x * 65536; p[4 * i + 2] = a + i - lo; p[4 * i + 3] = (t + .5) / cw - a - i

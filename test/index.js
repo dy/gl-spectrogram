@@ -182,6 +182,14 @@ test('pans: cached columns plus new ones draw what a fresh view draws; an unchan
   }
 })
 
+// Zoomed in, a frame gives to columns far either side of its own: each is transformed once, given to every column it
+// reaches, so a pan of a few columns transforms a few frames, and the picture is what a fresh view draws
+test('sweeps: zoomed in, a pan transforms the frames it uncovers; turns, jumps and edits draw what a fresh view draws', async () => {
+  let r = await run('sweeps')
+  assert.ok(r.worst < .01, `largest difference ${r.worst} dB`)
+  assert.ok(r.step < .1, `a pan of 5 columns scatters ${(r.step * 100).toFixed(1)}% of the points the whole view does`)
+})
+
 // Noise zoomed out as frames come, by the median cell: their mean keeps the mean power, so the frames' picture (each
 // cell the highest across its row's bins) holds within half a dB, at any zoom; reassigned cells, sparser, rise only as
 // their speckle averages out (a noise bin's median is ln 2, 1.6 dB, under its mean), well under what the loudest of the

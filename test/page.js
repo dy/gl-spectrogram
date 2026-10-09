@@ -422,6 +422,36 @@ export function pans({ method = null } = {}) {
   return { worst: out, runs, again }
 }
 
+// Zoomed in, frames reaching 100 columns and more either side (frames of 512 at 2.3 samples a column): pans of a few
+// columns right, a turn back, a jump within a view, one far, and samples set and pushed in and past the view, each
+// against a fresh view; and the points a few columns' pan scatters, against the whole view's
+export function sweeps() {
+  let rate = 48000, r = random(7), n = 40000, d = Float32Array.from({ length: n }, (_, i) => Math.sin(i * .07) * .3 + (r() - .5) * .05 + (i % 3001 === 0 ? 1 : 0))
+  let W = 180, H = 80, spp = 2.3, a = new Spectrogram(canvas(W, H), { pixelRatio: 1, sampleRate: rate, data: d, size: 512 })
+  let b = new Spectrogram(canvas(W, H), { pixelRatio: 1, sampleRate: rate, size: 512 }), out = 0, gl = a.gl, points = 0, draw = gl.drawArrays.bind(gl)
+  gl.drawArrays = (mode, first, count) => { if (mode === gl.POINTS) points += count; draw(mode, first, count) }
+  let view = from => { points = 0; a.update({ range: [from, from + spp * W] }).render(); return points }
+  let check = from => { b.update({ data: d, range: [from, from + spp * W] }).render(); out = Math.max(out, worst(levelsOf(a, W), levelsOf(b, W))) }
+  let from = 9000.7, whole = view(from), step = []
+  check(from)
+  for (let k = 0; k < 6; k++) { step.push(view(from += 5 * spp)); check(from) }
+  for (let k = 0; k < 6; k++) { view(from -= 7 * spp); check(from) }
+  for (let at of [from + 60 * spp, from - 150 * spp, 30000.2, 9000.3]) { view(from = at); check(from) }
+  // samples changed in the view, and on either side of it
+  for (let at of [from + 100, from + 600, from - 500]) {
+    let s = Float32Array.from({ length: 300 }, (_, i) => Math.cos(i * .3) * .4)
+    a.set(s, Math.floor(at)); d = d.slice(); d.set(s, Math.floor(at))
+    view(from); check(from); view(from += 3 * spp); check(from)
+  }
+  // the end pushed, the view at it
+  let end = Float32Array.from({ length: 2000 }, (_, i) => Math.sin(i * .11) * .2), e = new Float32Array(d.length + end.length)
+  e.set(d); e.set(end, d.length); d = e; a.push(end)
+  view(from = d.length - spp * W * .8); check(from)
+  gl.drawArrays = draw
+  for (let el of document.querySelectorAll('canvas')) el.remove()
+  return { worst: out, step: Math.max(...step) / whole }
+}
+
 // White noise zoomed out past half a window a column (frames of 512, 256 samples): the median cell, in dB, at a view's
 // first render and once every sample is in a frame, at several zooms
 export function steady({ combine = null, method = null, spans = [64, 600, 4800] }) {
