@@ -109,9 +109,11 @@ test('sine: amplitude 0.1 reads -20 dB, also at 440 Hz and 15 kHz, on a zoomed b
 // that Wigner–Ville's analytic signal spans): at 0 dB within 0.01 for the methods that read a spectrum, within 1 where
 // reassignment gathers it; on the row each scale's formula gives. Between bins, Hann frames lose up to 1.42 dB (its
 // scalloping loss, Harris 1978, table 1), tapers' flat top under 0.2.
+// (bands: 1031.25 Hz, on a bin of frames of 1024 and of 2048 alike, a third of an octave under 1250 Hz, where the two
+// crossfade: their shares sum to one)
 test('sine: every method on every scale, a full-scale sine on its row at 0 dB', async () => {
   for (let method of ['frames', 'reassigned', 'synchrosqueezed', 'bands', 'tapers', 'wigner']) for (let scale of ['log', 'mel', 'erb', 'lin']) {
-    let r = await run('sine', { scale, method, f: 1007.8125 }), want = Math.floor(r.u), near = Math.abs(r.u - Math.round(r.u)) < .01
+    let r = await run('sine', { scale, method, f: method === 'bands' ? 1031.25 : 1007.8125 }), want = Math.floor(r.u), near = Math.abs(r.u - Math.round(r.u)) < .01
     let gathers = !['reassigned', 'synchrosqueezed'].includes(method), off = gathers ? .01 : 1
     assert.equal(r.size, 2048, `${method}, ${scale}: FFT size`)
     for (let row of r.rows) assert.ok(row === want || near && Math.abs(row - r.u) < 1, `${method}, ${scale}: row ${row}, the formula gives ${r.u}`)

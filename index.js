@@ -26,6 +26,7 @@ const LEVEL = 1.6, FLOOR = 150      // spectra(): a byte per bin, (dB + FLOOR) �
 // bands: under each frequency (Hz), frames of the view's FFT size times this; at 2048 the lab's 8192 under 200 Hz to
 // 512 over 3 kHz, about 30 to 60 periods of each band's top
 const BANDS = [[200, 4], [500, 2], [1250, 1], [3000, .5], [Infinity, .25]]
+const FADE = 1 / 3                  // bands: each crossfades into the next over this many octaves either side of their edge
 const TAPERS = 3                    // tapers: a tone's top flat over ±1 bin, noise's spread in dB halved (χ² of 6 degrees)
 const SWEEP = 8                     // reassigned frames reaching this many columns or more either side are swept (#sweep)
 
@@ -58,7 +59,8 @@ const SCALE = { log: 0, mel: 1, lin: 2, erb: 3 }
 //   reassigned       the power each bin's phase moves into the cell, in time and frequency (Auger & Flandrin 1995)
 //   synchrosqueezed  each bin's complex value moved to its instantaneous frequency and summed, time staying the
 //                    frame's (Thakur & Wu 2011, the STFT form of Daubechies, Lu & Wu 2011)
-//   bands            frames as above, of a length by band (BANDS), as editors blend several lengths
+//   bands            frames as above, of a length by band (BANDS), as editors blend several lengths: crossfaded in
+//                    power over FADE octaves either side of an edge, so no band ends in a seam
 //   tapers           TAPERS sine tapers' spectra averaged (Riedel & Sidorenko 1995): steadier noise
 //   wigner           pseudo Wigner–Ville of the analytic signal under a Hann lag window (Ville 1948): lines thin
 //                    without reassignment, and between any two components a cross-term
@@ -225,7 +227,7 @@ void main() {
 const GATHER = HEAD + `
 uniform sampler2D spec, frames, edges, levels;
 uniform int kind, N, last, cap, slot, span, rows, r0, nr, per;
-uniform float norm, hz; // value → level; Hz per bin
+uniform float norm, hz, lo, hi; // value → level; Hz per bin; log2 of the band's edges, Hz (bands), ±2e9 for none
 flat out vec2 v;
 int src;
 
@@ -243,6 +245,10 @@ float P(int f, int k) {
 }
 float at(int f, float x) { int i = min(int(x), last - 1); return mix(P(f, i), P(f, i + 1), x - float(i)); }
 float edge(int r) { return clamp(texelFetch(edges, ivec2(r & 1023, r >> 10), 0).r / hz, 0., float(last)); }
+float hzAt(int r) { return texelFetch(edges, ivec2(r & 1023, r >> 10), 0).r; }
+float ramp(float x) { return clamp(x * ${1 / (2 * FADE)} + .5, 0., 1.); }
+// the band's share of row r (bands, as weight() in index.js): its middle's octave against the band's edges
+float share(int r) { float f = sqrt(hzAt(r) * hzAt(r + 1)), l = f > 0. ? log2(f) : -1e9; return ramp(l - lo) * (1. - ramp(l - hi)); }
 
 void main() {
   int i = gl_VertexID / nr, r = r0 + gl_VertexID - i * nr;
@@ -256,7 +262,7 @@ void main() {
   float a = edge(r), b = edge(r + 1), m = max(at(i, a), at(i, b));
   for (int k = int(ceil(a)); float(k) < b; k++) m = max(m, P(i, k));
   gl_Position = vec4((float((slot + int(c)) & (cap - 1)) + .5) / float(cap) * 2. - 1., (float(r) + .5) / float(rows) * 2. - 1., 0, 1);
-  v = vec2(m * norm * (kind == 3 ? fr.y : 1.), 0);
+  v = vec2(m * norm * (kind == 3 ? fr.y : share(r)), 0);
 }`
 
 const POINT = HEAD + `
@@ -319,7 +325,7 @@ const PROGRAMS = {
   ])),
   stage: [QUAD, STAGE, { src: 0, tw: 1 }, ['N', 'L']],
   scatter: [SCATTER, POINT, { spec: 0, frames: 4 }, ['N', 'k0', 'nb', 'cap', 'slot', 'span', 'rows', 'scale', 'squeeze', 'cw', 'norm', 'hz', 'b0', 'bk']],
-  gather: [GATHER, POINT, { spec: 0, frames: 4, edges: 6, levels: 7 }, ['kind', 'N', 'last', 'cap', 'slot', 'span', 'rows', 'r0', 'nr', 'norm', 'hz', 'per']],
+  gather: [GATHER, POINT, { spec: 0, frames: 4, edges: 6, levels: 7 }, ['kind', 'N', 'last', 'cap', 'slot', 'span', 'rows', 'r0', 'nr', 'norm', 'hz', 'per', 'lo', 'hi']],
   fold: [QUAD, FOLD, { src: 0 }, ['power']],
   reduce: [QUAD, REDUCE, { src: 0 }, ['size', 'most']],
   draw: [QUAD, DRAW, { cells: 0, peak: 1, lut: 5 }, ['origin', 'slot', 'cap', 'f0', 'ratio', 'data', 'unit', 'gain', 'depth', 'levels', 'pinned']]
@@ -1032,7 +1038,7 @@ export default class Spectrogram {
       }
       else if (method === 'tapers') read(S.tex[spectra(2 * N, N, 2)], { kind: 1, N: 2 * N, last: N, hz: rate / (2 * N), norm: H / tapers(N), r0: 0, nr: rows })
       // frames and bands: a full-scale sine on a bin gives (n/4)², Hann's coherent gain 1/2 (Harris 1978, table 1)
-      else for (let { n, r0, nr } of K.passes) read(S.tex[spectra(n, n, 1)], { kind: 0, N: n, last: n / 2, hz: rate / n, norm: H / (n / 4) ** 2, r0, nr })
+      else for (let { n, r0, nr, lo, hi } of K.passes) read(S.tex[spectra(n, n, 1)], { kind: 0, N: n, last: n / 2, hz: rate / n, norm: H / (n / 4) ** 2, r0, nr, lo, hi })
     }
     if (into === K) return
     // the run's cells onto the columns: as they are, squeezed ones as the power of their sums; a further frame's, frame j,
@@ -1184,10 +1190,20 @@ const margin = K => K.method === 'reassigned' ? Math.ceil((K.N / 2 + 1) / K.cw) 
 // frame's cost in FFTs of N points
 function layout(K, rows, max) {
   let { N, method } = K, of = WARP[K.scale][1], passes = []
-  if (method === 'bands') for (let r = 0; r < rows; r++) {
-    let f = of(K.b0 + (r + .5) / K.bk), n = Math.min(Math.max(N * BANDS.find(([edge]) => f < edge)[1], 16), max), last = passes.at(-1)
-    if (last?.n === n) last.nr++
-    else passes.push({ n, l: n, r0: r, nr: 1 })
+  if (method === 'bands') {
+    // bands of one length merged; each pass the rows its band weighs in, their middles (fade) inside it or within FADE
+    // octaves past its edges
+    let bands = []
+    for (let [hi, k] of BANDS) {
+      let n = Math.min(Math.max(N * k, 16), max), last = bands.at(-1)
+      if (last?.n === n) last.hi = hi
+      else bands.push({ n, lo: last?.hi ?? 0, hi })
+    }
+    for (let { n, lo, hi } of bands) {
+      let r0 = -1, nr = 0
+      for (let r = 0; r < rows; r++) if (weight(mid(K, r), lo, hi) > 0) { if (r0 < 0) r0 = r; nr = r - r0 + 1 }
+      if (nr) passes.push({ n, l: n, r0, nr, lo, hi })
+    }
   }
   else passes.push({ ...method === 'tapers' ? { n: 2 * N, l: N } : method === 'wigner' ? { n: 2 * N, l: 2 * N } : { n: N, l: N }, r0: 0, nr: rows })
   K.passes = passes
@@ -1197,6 +1213,12 @@ function layout(K, rows, max) {
   K.cost = method === 'wigner' ? 5 : passes.reduce((s, p) => s + p.n, 0) / N
   return K
 }
+
+// Bands: the row r's middle, the geometric mean of its edges in Hz, and how much band [lo, hi) weighs in at frequency f:
+// all of it inside, ramping in power, linear in octaves, across FADE either side of its edges (GATHER's weight)
+const mid = (K, r) => { let of = WARP[K.scale][1]; return Math.sqrt(of(K.b0 + r / K.bk) * of(K.b0 + (r + 1) / K.bk)) }
+const rise = x => Math.min(1, Math.max(0, x / (2 * FADE) + .5))
+const weight = (f, lo, hi) => f > 0 ? (lo > 0 ? rise(Math.log2(f / lo)) : 1) * (hi < Infinity ? 1 - rise(Math.log2(f / hi)) : 1) : lo > 0 ? 0 : 1
 
 // The tapers' sum in GATHER for a full-scale sine on a bin of the padded frame: Σ cot²(πj/2L) over odd j, as taper j sums
 // to √(2/L) cot(πj/2L) for odd j and to 0 for even; their average's top, flat over ±1 bin, is there
@@ -1258,7 +1280,7 @@ function scatter(gl, c, K, into, spec, nf, slot, span) {
 }
 
 // Spectra read across rows: a point per frame and row of [r0, r0 + nr), in the frame's column (GATHER)
-function gather(gl, c, K, into, spec, nf, slot, span, { kind, N, last, hz, norm, r0, nr, per = 1, max = false }) {
+function gather(gl, c, K, into, spec, nf, slot, span, { kind, N, last, hz, norm, r0, nr, per = 1, max = false, lo = 0, hi = Infinity }) {
   let { cap, rows } = K, u = points(gl, c.gather, into, cap, rows, spec)
   // columns from the spectra given: each the loudest of those it spans, or their sum, each weighted to their mean
   if (max) gl.blendEquation(gl.MAX)
@@ -1274,6 +1296,8 @@ function gather(gl, c, K, into, spec, nf, slot, span, { kind, N, last, hz, norm,
   gl.uniform1i(u.nr, nr)
   gl.uniform1f(u.norm, norm)
   gl.uniform1f(u.hz, hz)
+  gl.uniform1f(u.lo, lo > 0 ? Math.log2(lo) : -2e9)
+  gl.uniform1f(u.hi, hi < Infinity ? Math.log2(hi) : 2e9)
   gl.drawArrays(gl.POINTS, 0, nf * nr)
   gl.blendEquation(gl.FUNC_ADD)
   gl.disable(gl.BLEND)

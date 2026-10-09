@@ -134,8 +134,8 @@ const METHODS = {
       for (let r = 0; r < H; r++) sums[(q - qa) * H + r] = re[r] * re[r] + im[r] * im[r]
     }
   },
-  frames: o => bands(o, () => 1),
-  bands: o => bands(o, f => [[200, 4], [500, 2], [1250, 1], [3000, .5], [Infinity, .25]].find(([edge]) => f < edge)[1]),
+  frames: o => bands(o, [[Infinity, 1]]),
+  bands: o => bands(o, [[200, 4], [500, 2], [1250, 1], [3000, .5], [Infinity, .25]]),
   tapers({ get, n, N, H, rate, edge, qa, qb, sums }) {
     let tapers = [1, 2, 3].map(j => i => Math.sqrt(2 / N) * Math.sin(Math.PI * j * i / N))
     let peak = tapers.reduce((s, w) => { let sum = 0; for (let i = 0; i < N; i++) sum += w(i); return s + (sum / 2) ** 2 }, 0)
@@ -164,16 +164,27 @@ const METHODS = {
     }
   }
 }
-// Hann frames, of N times by(f) samples for the row at f (clamped to 16..16384), each row from its own
-function bands({ get, n, N, H, rate, edge, qa, qb, sums }, by) {
-  let sizes = Array.from({ length: H }, (_, r) => Math.min(Math.max(N * by(edge(r + .5)), 16), 16384))
+// Hann frames, of N times k samples for the band below each edge (clamped to 16..16384, bands of one length merged); a
+// row the sum of the bands' readings, each weighted by its share there: whole inside, ramping in power, linear in octaves,
+// over a third of an octave either side of an edge, at the row's middle, the geometric mean of its edges
+function bands({ get, n, N, H, rate, edge, qa, qb, sums }, list) {
+  let parts = []
+  for (let [hi, k] of list) {
+    let L = Math.min(Math.max(N * k, 16), 16384), last = parts.at(-1)
+    if (last?.L === L) last.hi = hi
+    else parts.push({ L, lo: last?.hi ?? 0, hi })
+  }
+  let rise = x => Math.min(1, Math.max(0, x * 1.5 + .5))
+  let share = (f, { lo, hi }) => f > 0 ? (lo > 0 ? rise(Math.log2(f / lo)) : 1) * (hi < Infinity ? 1 - rise(Math.log2(f / hi)) : 1) : lo > 0 ? 0 : 1
   return (t, q) => {
     if (q < qa || q >= qb) return
-    let P = new Map()
-    for (let r = 0; r < H; r++) {
-      let L = sizes[r]
-      if (!P.has(L)) { let [re, im] = spectrum(get, n, t, L, hann(L)); P.set(L, Float64Array.from({ length: L / 2 + 1 }, (_, k) => (re[k] * re[k] + im[k] * im[k]) / (L / 4) ** 2)) }
-      sums[(q - qa) * H + r] = across(P.get(L), L / 2, edge(r) / (rate / L), edge(r + 1) / (rate / L))
+    for (let r = 0; r < H; r++) sums[(q - qa) * H + r] = 0
+    for (let part of parts) {
+      let { L } = part, [re, im] = spectrum(get, n, t, L, hann(L)), P = Float64Array.from({ length: L / 2 + 1 }, (_, k) => (re[k] * re[k] + im[k] * im[k]) / (L / 4) ** 2)
+      for (let r = 0; r < H; r++) {
+        let w = share(Math.sqrt(edge(r) * edge(r + 1)), part)
+        if (w > 0) sums[(q - qa) * H + r] += w * across(P, L / 2, edge(r) / (rate / L), edge(r + 1) / (rate / L))
+      }
     }
   }
 }
